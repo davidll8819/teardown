@@ -5,6 +5,8 @@ import path from 'node:path';
 const three = fileURLToPath(import.meta.resolve('three'));
 const threeRoot = path.dirname(path.dirname(three));
 const trustedStage = fileURLToPath(new URL('./simulator-stage.js', import.meta.url));
+const trustedExhibit = fileURLToPath(new URL('./simulator-exhibit.js', import.meta.url));
+const trustedModules = new Set([trustedStage, trustedExhibit]);
 const MAX_FILE = 100_000;
 const MAX_TOTAL = 350_000;
 const MAX_FILES = 24;
@@ -15,7 +17,7 @@ function filename(value) {
 }
 
 /** A bounded virtual project; generated source never touches server paths. */
-export function createWorkspace() {
+export function createWorkspace({requireExhibit = false} = {}) {
   const files = new Map();
   let lastBuild = null;
   function write(name, content) {
@@ -33,21 +35,33 @@ export function createWorkspace() {
     return files.get(name);
   }
   async function compile(entry = 'main.js') {
+    // A failed rebuild must never leave the previous artifact eligible for finish.
+    lastBuild = null;
     entry = filename(entry);
     if (!files.has(entry)) throw new Error('file_not_found');
-    const output = await build({entryPoints: [entry], bundle: true, write: false, format: 'iife', platform: 'browser', target: 'es2022', logLevel: 'silent', minify: true,
+    const output = await build({entryPoints: [entry], bundle: true, write: false, metafile: true, format: 'iife', platform: 'browser', target: 'es2022', logLevel: 'silent', minify: true,
       plugins: [{name: 'virtual-project', setup(api) {
         api.onResolve({filter: /.*/}, args => {
           if (args.kind === 'entry-point') return {path: entry, namespace: 'project'};
           if (args.namespace === 'project') {
             if (args.path === 'three') return {path: three};
             if (args.path === 'teardown-stage') return {path: trustedStage};
-            if (!args.path.startsWith('./') && !args.path.startsWith('../')) return {errors: [{text: 'Only relative project files, three and teardown-stage are allowed'}]};
+            // The trusted runtime has no required module-load effects: its UI
+            // is created only by calling createMechanicalExhibit. This also
+            // lets esbuild eliminate a token unused import before evidence is
+            // collected from the final output.
+            if (args.path === 'teardown-exhibit') return {path: trustedExhibit, sideEffects: false};
+            if (!args.path.startsWith('./') && !args.path.startsWith('../')) return {errors: [{text: 'Only relative project files, three, teardown-stage and teardown-exhibit are allowed'}]};
             const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(args.importer), args.path));
             if (resolved.startsWith('../') || !files.has(resolved)) return {errors: [{text: `Project import not found: ${args.path}`}]};
             return {path: resolved, namespace: 'project'};
           }
-          if (args.importer === trustedStage && args.path === 'three') return {path: three};
+          if (trustedModules.has(args.importer)) {
+            if (args.path === 'three') return {path: three};
+            // Trusted modules may share only this exact browser stage, never
+            // resolve arbitrary server paths through a generic relative loader.
+            if (args.importer === trustedExhibit && args.path === './simulator-stage.js') return {path: trustedStage};
+          }
           if (args.importer.startsWith(`${threeRoot}${path.sep}`) && args.path.startsWith('.')) {
             const resolved = path.resolve(path.dirname(args.importer), args.path);
             if (resolved.startsWith(`${threeRoot}${path.sep}`)) return {path: resolved};
@@ -57,8 +71,13 @@ export function createWorkspace() {
         api.onLoad({filter: /.*/, namespace: 'project'}, args => ({contents: files.get(args.path), loader: args.path.endsWith('.json') ? 'json' : 'js'}));
       }}],
     });
+    const exhibitIncluded = Object.values(output.metafile.outputs).some(item =>
+      Object.entries(item.inputs).some(([name, input]) => path.resolve(name) === trustedExhibit && input.bytesInOutput > 0));
+    if (requireExhibit && !exhibitIncluded) throw new Error('exhibit_runtime_required: import and call createMechanicalExhibit from teardown-exhibit; standalone geometry or an unused import is insufficient');
     lastBuild = output.outputFiles[0].text;
-    return {bytes: Buffer.byteLength(lastBuild)};
+    // Bundling is structural evidence only. Browser behavior and appearance
+    // still need an independent runtime/visual review.
+    return {bytes: Buffer.byteLength(lastBuild), exhibitRuntime: exhibitIncluded ? 'included' : 'absent'};
   }
   function artifact() { if (!lastBuild) throw new Error('build_required'); return lastBuild; }
   return {write, read, list: () => [...files.keys()].sort(), sources: () => Object.fromEntries(files), compile, artifact};

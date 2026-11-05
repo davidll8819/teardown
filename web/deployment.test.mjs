@@ -93,7 +93,17 @@ test('declared production entry supports signed image jobs and durable restart r
         for (const item of previous) assert.equal(JSON.parse(item.content).error, undefined);
         const plan = [
           ['read_reference', {name: 'v8-geometry'}],
-          ['write_file', {path: 'main.js', content: "import {Scene} from 'three'; import {ringGeometry} from 'teardown-stage'; window.fixtureScene = new Scene(); window.fixtureGeometry = ringGeometry({outerRadius:2, innerRadius:1, depth:1}); document.getElementById('app').textContent='deployment fixture result';"}],
+          ['write_file', {path: 'main.js', content: `import * as THREE from 'three';
+import {ringGeometry} from 'teardown-stage';
+import {createMechanicalExhibit} from 'teardown-exhibit';
+const root = new THREE.Group();
+const part = new THREE.Mesh(ringGeometry({outerRadius:2,innerRadius:1,depth:1}),new THREE.MeshStandardMaterial());
+root.add(part);
+createMechanicalExhibit({container:document.getElementById('app'),title:'deployment fixture result',root,
+parts:[{id:'ring',label:'Fixture ring',object:part,cutaway:true,explode:[0,0,2]}],
+parameters:[{id:'speed',label:'Fixture speed',value:1,min:0,max:2,step:0.1}],
+readouts:[{id:'angle',label:'Fixture angle',key:'angle',unit:'rad'}],
+model:({time,parameters})=>({angle:time*parameters.speed}),update:state=>{part.rotation.z=state.angle;}});`}],
           ['build_simulator', {entry: 'main.js'}],
           ['finish', {}],
         ];

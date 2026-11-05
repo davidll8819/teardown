@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtemp, rm, readdir, readFile, stat} from 'node:fs/promises';
+import {mkdtemp, rm, readdir, readFile, stat, writeFile} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {createJobStore} from './jobs.mjs';
@@ -123,5 +123,88 @@ test('reference images and analysis persist privately, survive restart and reach
     assert.doesNotMatch(JSON.stringify(restored), /sources|motorParts|main\.js/);
     assert.doesNotMatch(JSON.stringify(await reopened.list(scope)), /sources|motorParts|main\.js/);
     assert.doesNotMatch(await readFile(path.join(saved, 'job.json'), 'utf8'), /sources|motorParts|main\.js/);
+  } finally {await rm(directory, {recursive: true, force: true});}
+});
+
+test('quality evidence is bounded, scoped and retained after restarting the store', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'teardown-quality-'));
+  try {
+    const scope = {org: 'one', user: 'alice'};
+    const store = createJobStore({directory, generate: async () => ({html: '<p>result</p>', quality: {
+      compile: 'passed', visual: 'passed', interaction: 'not_run', reviewAttempts: 8,
+      privateDiagnostic: 'must not be published',
+      feedback: [
+        {attempt: 1, passed: false, feedback: '零件相互穿插。', image: 'private screenshot'},
+        {attempt: 2, passed: true, feedback: `已修正。\u0000${'形'.repeat(1100)}`},
+        {attempt: 8, passed: 'true', feedback: '仅保留明确的检查结果。'},
+        {attempt: 4, passed: true, feedback: '超出记录数量'},
+      ],
+    }})});
+    const job = await store.create(scope, '带传动与仪表的机器');
+    let state;
+    for (let i = 0; i < 100; i++) {state = await store.get(scope, job.id); if (state.status === 'completed') break; await new Promise(resolve => setTimeout(resolve, 5));}
+    assert.equal(state.status, 'completed');
+    assert.deepEqual(Object.keys(state.quality).sort(), ['compile', 'feedback', 'interaction', 'reviewAttempts', 'visual']);
+    assert.equal(state.quality.visual, 'passed');
+    assert.equal(state.quality.interaction, 'not_run');
+    assert.equal(state.quality.reviewAttempts, 3);
+    assert.equal(state.quality.feedback.length, 3);
+    assert.equal(state.quality.feedback[1].feedback.length, 1000);
+    assert.deepEqual(state.quality.feedback[2], {attempt: 3, passed: false, feedback: '仅保留明确的检查结果。'});
+    assert.doesNotMatch(JSON.stringify(state), /private|must not|超出记录|\\u0000/);
+    const reopened = createJobStore({directory, generate: async () => {throw new Error('must_not_run');}});
+    assert.deepEqual((await reopened.get(scope, job.id)).quality, state.quality);
+    assert.deepEqual((await reopened.list(scope))[0].quality, state.quality);
+    await assert.rejects(reopened.get({org: 'two', user: 'alice'}, job.id), /job_not_found/);
+    await assert.rejects(reopened.get({org: 'one', user: 'bob'}, job.id), /job_not_found/);
+    const [scopeDirectory] = await readdir(directory);
+    const persisted = await readFile(path.join(directory, scopeDirectory, job.id, 'job.json'), 'utf8');
+    assert.deepEqual(JSON.parse(persisted).quality, state.quality);
+    assert.doesNotMatch(persisted, /privateDiagnostic|private screenshot|超出记录/);
+  } finally {await rm(directory, {recursive: true, force: true});}
+});
+
+test('legacy completed jobs do not imply visual or interaction checks and remain unchanged on disk', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'teardown-legacy-quality-'));
+  try {
+    const scope = {org: 'one', user: 'alice'};
+    const store = createJobStore({directory, generate: async () => ({html: '<p>legacy result</p>', visualReviewed: true})});
+    const job = await store.create(scope, '原来的模拟器');
+    let state;
+    for (let i = 0; i < 100; i++) {state = await store.get(scope, job.id); if (state.status === 'completed') break; await new Promise(resolve => setTimeout(resolve, 5));}
+    assert.equal(state.quality.visual, 'passed');
+    assert.equal(state.quality.interaction, 'not_run');
+    assert.equal(state.quality.compile, 'not_run');
+    const [scopeDirectory] = await readdir(directory);
+    const file = path.join(directory, scopeDirectory, job.id, 'job.json');
+    const oldJob = JSON.parse(await readFile(file, 'utf8'));
+    delete oldJob.quality;
+    const original = JSON.stringify(oldJob);
+    await writeFile(file, original);
+    const reopened = createJobStore({directory, generate: async () => {throw new Error('must_not_run');}});
+    const expected = {compile: 'not_run', visual: 'not_run', interaction: 'not_run', reviewAttempts: 0, feedback: []};
+    assert.deepEqual((await reopened.get(scope, job.id)).quality, expected);
+    assert.deepEqual((await reopened.list(scope))[0].quality, expected);
+    assert.equal(await readFile(file, 'utf8'), original);
+    assert.equal(await reopened.artifact(scope, job.id), '<p>legacy result</p>');
+  } finally {await rm(directory, {recursive: true, force: true});}
+});
+
+test('failed review retains safe feedback without exposing the underlying error', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'teardown-review-failed-'));
+  try {
+    const store = createJobStore({directory, generate: async () => {throw Object.assign(new Error('private renderer diagnostic'), {
+      code: 'visual_review_limit', quality: {compile: 'passed', visual: 'failed', interaction: 'failed', reviewAttempts: 3, feedback: [{attempt: 3, passed: false, feedback: '拆解后零件偏离装配轴线。'}]},
+    });}});
+    const scope = {org: 'one', user: 'alice'};
+    const job = await store.create(scope, '展示拆解过程');
+    let state;
+    for (let i = 0; i < 100; i++) {state = await store.get(scope, job.id); if (state.status === 'failed') break; await new Promise(resolve => setTimeout(resolve, 5));}
+    assert.equal(state.error, 'visual_review_limit');
+    assert.equal(state.quality.visual, 'failed');
+    assert.equal(state.quality.interaction, 'failed');
+    assert.equal(state.quality.feedback[0].feedback, '拆解后零件偏离装配轴线。');
+    assert.doesNotMatch(JSON.stringify(state), /private renderer/);
+    await assert.rejects(store.artifact(scope, job.id), /job_not_ready/);
   } finally {await rm(directory, {recursive: true, force: true});}
 });

@@ -63,6 +63,20 @@ MIT licence.
 
 This branch contains a local prototype for text-to-simulator generation. It is not yet a complete implementation of the upstream skill or a production-ready marketplace release. See [4yi Web integration notes](docs/4yi-web-integration.md) for the verified scope and remaining isolation and visual-review work.
 
+New generated projects must use the shared exhibit runtime: live instruments,
+named subsystem controls, assembled/cutaway/exploded views and a tour that yields
+to the visitor. The generator still supplies the actual machine geometry and
+kinematics. A compiled result is labelled separately from a visually or
+interactively checked result. The optional local review worker checks several
+views and controls and compares the result with the submitted reference images;
+it remains a development-only executor, not an enabled production sandbox.
+
+`node web/check-exhibit.mjs` exercises the shared controls in an independent local
+Chrome with an empty profile and blocked network, using the original V8 as an
+explicitly labelled, hand-authored regression fixture. Its screenshots are not
+evidence that the AI can generate the README gallery's robot models. Web video
+and audio recording are not implemented.
+
 After `npm ci`, build the interface with `npm run build:web`. To run locally, provide `OPENAI_API_BASE`, `OPENAI_API_KEY`, and `TEXT_MODEL` in your process environment, set `TEARDOWN_LOCAL_MODE=1`, then run `npm run start:web`. Local mode listens on `127.0.0.1:3000`; never enable it for a shared deployment. For a model requiring it, set `TEARDOWN_REASONING_EFFORT=none`. Do not commit credentials.
 
 Run the local tests with `npm run test:web`. Each user installs a dedicated instance through their personal organization. Before release, verify that each instance is accessible only to authorized users, that the trusted-router boundary holds, and that the installed model/token configuration and persistent storage work. The checked-in `4yi-app.json` is a deployment candidate, not evidence that those checks have passed.

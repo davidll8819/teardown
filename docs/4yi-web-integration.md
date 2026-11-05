@@ -1,6 +1,6 @@
 # 4yi Web integration: implementation notes
 
-Status: local prototype. The Web UI, scoped task store, bounded multi-file authoring tools, and restricted browser preview are implemented, but this is not yet the full upstream agent workflow or an approved marketplace release.
+Status: incomplete Web adaptation. The Web UI, scoped task store, bounded multi-file authoring tools, and restricted browser preview are implemented. A DEV test version was imported, but it is not the full upstream agent workflow or a production-quality release. Later dated evidence below supersedes earlier local-only observations.
 
 ## 当前 4yi 部署配置
 
@@ -125,3 +125,41 @@ Dedicated marketplace applications already have a model-selection and per-instal
 5. **4yi 验收流程**：对实际提交执行 Import → Analyze，检查 blocker 和 proposal；在获准部署后执行 Apply/Release、构建/启动/smoke、Publish Gate。再以真实组织与账号检查隔离、预览/下载、刷新、重启/更新、休眠唤醒、额度归属及消费者版本。本轮未执行导入、发布或人工 Certify。
 
 功能边界保持不变：当前用于交互式教学展示；生产没有自动视觉验收，不提供经过验证的打印 CAD、配合公差或实物装配保证。
+
+### 2026-11-05 生成质量审计与展台恢复
+
+用户对比了 README 中精细机器人展台和实际生成的粗糙几何模型。审计确认原始
+`SKILL.md`、`sims/`、`sfx/` 未删除，但 Web 原先只开放基础舞台及三份 V8 参考，
+没有接入完整仪表、子系统控制和巡游。无视觉审核器时，静态编译后即标记任务完成。
+这不是原版完整工作流，也没有证据将质量差距归因于某个模型。
+
+本轮源代码修复：
+
+- 新增可信 `teardown-exhibit` 模块，实际提供两侧仪表、可调参数、部件选择说明、
+  子系统显隐、装配/剖切/爆炸、相机视角、暂停及巡游时间线。运动与读数使用同一个
+  `model` 状态；爆炸偏移使用独立父组，保留原部件转轴。用户操作接管后闲置 25 秒
+  恢复，明确关闭巡游或暂停时不自动恢复；支持减少动态效果及小屏滚动。
+- 新生成项目必须将该模块保留在最终 bundle，仍由模型编写真正的机器几何和运动学。
+  esbuild 依赖证据只表示模块被打包，不证明它实际挂载或质量合格。固定参考库补充
+  V8 仪表、巡游、时间线和 Cessna/Strandbeest 几何/状态代码；不开放任意文件路径。
+- 实验渲染器采集装配、剖切、爆炸和巡游画面，并操作实际控件，检查时钟暂停/恢复、
+  显隐、位移及持续有效的读数。剖切必须使原本可见的外壳隐藏且保留可见内部件。
+  视觉模型同时收到用户参考图。三个失败审核后终止，反馈及独立质量状态保存到任务。
+- 历史及新结果明确区分生成完成、画面检查、基础交互检查。没有审核证据的旧任务
+  标为未检查，不改写历史产物，也不声称 CAD、物理准确性或完整运动周期已经验证。
+
+本轮本地证据：42 项 Node 测试通过，Web 构建及 diff 检查通过。独立临时 Chrome
+在禁网、开启浏览器 sandbox 的配置中验证了原 V8 测试样机的 14 项基础检查，
+1440/768/390 三种宽度、参数与读数联动、命名选择、真实 25 秒闲置恢复、显式关闭、
+减少动态效果及清理。浏览器负例验证整机剖切消失、预先隐藏部件、运行后 NaN 和
+更新异常均不能通过。`web/check-exhibit.mjs` 可复验，截图/报告在本地
+`.taste-skill/exhibit-restoration/`。这是一份明确标注的手写回归样机，**不是模型生成
+机器人达到参考图水平的证据**。
+
+仍未完成：DEV 的生产画面检查和自动返修服务没有接入。现有 Docker supervisor
+与 `--no-sandbox` worker 保持本地实验用途，不能通过删除 local 限制或把 Docker
+socket 挂进 Web 容器启用。此前实际消费者实例中约 134 KB 的图片请求返回 413，
+图片入口链路仍需处理。必须接入经验证的独立执行器，并重新以真实安装实例、
+真实参考图完成生成/检查/返修、确认实际版本及权限，才能声称完成相应交付。
+Web 端 60 fps 视频/音频录制仍未实现。仓库只有 Mellis HB-7 展示 GIF，没有可直接
+恢复的蜂机器人完整源码。上述本轮修复尚不是新 DEV 发布或原版全部能力恢复。

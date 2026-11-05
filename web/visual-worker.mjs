@@ -1,4 +1,5 @@
 import {chromium} from 'playwright';
+import {inspectExhibit} from './exhibit-inspection.mjs';
 
 const chunks = []; let size = 0;
 for await (const chunk of process.stdin) {
@@ -17,6 +18,9 @@ try {
   await page.setContent(input.html, {waitUntil: 'load', timeout: 12000});
   await page.waitForTimeout(1500);
   const canvasCount = await page.locator('canvas').count();
-  const screenshot = await page.screenshot({type: 'jpeg', quality: 70, timeout: 10000});
-  console.log(JSON.stringify({canvasCount, errors, image: screenshot.toString('base64')}));
+  const screenshot = await page.screenshot({type: 'jpeg', quality: 65, timeout: 3000});
+  const inspection = await inspectExhibit(page);
+  console.log(JSON.stringify({canvasCount, errors, image: screenshot.toString('base64'),
+    frames: inspection.frames,
+    interaction: {passed: inspection.passed, checks: inspection.checks, failures: inspection.failures}}));
 } finally { await browser.close(); }

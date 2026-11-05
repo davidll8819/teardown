@@ -5,7 +5,7 @@ import {Button, Textarea} from './ui.jsx';
 import {prepareReference, restoreReferences, MAX_REFERENCES, MAX_REFERENCE_TOTAL} from './reference-images.js';
 import './style.css';
 
-const labels = {queued: '等待生成', generating: '生成中', completed: '已完成', failed: '生成失败', cancelled: '已取消'};
+const labels = {queued: '等待生成', generating: '生成中', completed: '生成完成', failed: '生成失败', cancelled: '已取消'};
 const phases = {analyzing: '分析参考图片', generating: '构思机械结构', working: '编写与完善模拟器', building: '编译交互页面', reviewing: '检查渲染效果'};
 const errors = {
   gateway_configuration_missing: '尚未配置模型密钥。请完成网关配置后重新生成。',
@@ -18,6 +18,10 @@ const errors = {
   agent_step_limit: '本次构建未能在限定步骤内完成，可以简化需求后重试。',
   interrupted: '上次生成因服务重启而中断，请重新生成。',
   reference_analysis_invalid: '参考图分析未完成，请换用清晰图片后重试。',
+  visual_review_limit: '画面或交互检查仍有未解决的问题，本次结果尚未通过检查。可以修改描述后重新生成。',
+  visual_review_invalid: '画面检查未返回有效结果，本次未能完成检查。请稍后重试。',
+  visual_response_invalid: '未能取得有效的画面检查结果，请稍后重试。',
+  visual_configuration_invalid: '画面检查暂时不可用，请稍后重试。',
 };
 const examples = [
   {name: '电车马达', detail: '从旋转磁场到零件拆解', prompt: '展示一个电车马达的工作原理、主要配件及拆解组装，提供转速和拆解进度控制。'},
@@ -29,6 +33,16 @@ const stamp = value => new Date(value).toLocaleString('zh-CN', {month: '2-digit'
 function duration(job) { const seconds = Math.max(0, Math.round((new Date(job.updatedAt) - new Date(job.createdAt)) / 1000)); return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`; }
 function Mark({className = ''}) { return <svg className={`mark ${className}`} viewBox="0 0 32 36" fill="none" aria-hidden="true"><path d="M16 2 29 9.5 16 17 3 9.5 16 2Z"/><path d="m3 16 13 7.5L29 16M3 22.5 16 30l13-7.5M16 30v4"/></svg>; }
 function Status({job}) { const Icon = running(job) ? LoaderCircle : job.status === 'completed' ? Check : job.status === 'failed' ? CircleAlert : Square; return <span className={`status ${job.status}`}><Icon className={running(job) ? 'spin' : ''}/>{labels[job.status]}</span>; }
+function QualityNote({quality}) {
+  const visual = quality?.visual, interaction = quality?.interaction;
+  const label = (name, status) => status === 'passed' ? `${name}检查通过` : status === 'failed' ? `${name}检查未通过` : `尚未检查${name}`;
+  const neitherChecked = !['passed', 'failed'].includes(visual) && !['passed', 'failed'].includes(interaction);
+  return <p className="quality-note" aria-label="结果检查情况">{neitherChecked ? '尚未检查画面和交互' : `${label('画面', visual)} · ${label('交互', interaction)}`}{visual === 'failed' || interaction === 'failed' ? '，需修改后重新检查。' : visual !== 'passed' || interaction !== 'passed' ? '，请对照参考图并试用控件。' : ''}</p>;
+}
+function QualityDetails({quality}) {
+  const label = status => status === 'passed' ? '检查通过' : status === 'failed' ? '检查未通过' : '未检查';
+  return <div className="detail-block"><h3>检查情况</h3><p>画面：{label(quality?.visual)}<br/>交互：{label(quality?.interaction)}</p>{quality?.feedback?.length > 0 && <ol className="stage-history quality-feedback">{quality.feedback.map((review, index) => <li key={index}><span>第 {review.attempt || index + 1} 次检查 · {review.passed ? '通过' : '需要改进'}</span><p>{review.feedback || '未提供补充说明。'}</p></li>)}</ol>}<p>生成完成表示已得到页面；机械精度与实际装配仍需另行验证。</p></div>;
+}
 async function api(url, options) { const r = await fetch(url, options); const value = await r.json(); if (!r.ok) throw new Error(value.error || 'request_failed'); return value; }
 const referenceUrl = (job, reference) => `/api/jobs/${job.id}/references/${reference.id}`;
 function ReferencePhoto({src, name, onOpen}) {
@@ -123,9 +137,9 @@ function App() {
       <Button className="new-button" variant="outline" disabled={busy} onClick={newJob}><Plus/>新建模拟器<span className="new-key">＋</span></Button>
       <div className="library-heading"><h2>我的模拟器</h2><button className="icon-button" aria-label="刷新任务列表" title="刷新任务列表" onClick={refresh}><RotateCw/></button></div>
       <label className="search"><Search/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索机械或描述" aria-label="搜索任务"/>{query && <button aria-label="清除搜索" onClick={() => setQuery('')}><X/></button>}</label>
-      <div className="filters" aria-label="任务筛选"><button aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>全部任务</button><button aria-pressed={filter === 'completed'} onClick={() => setFilter('completed')}>已完成</button></div>
+      <div className="filters" aria-label="任务筛选"><button aria-pressed={filter === 'all'} onClick={() => setFilter('all')}>全部任务</button><button aria-pressed={filter === 'completed'} onClick={() => setFilter('completed')}>已生成</button></div>
       <div className="task-list">
-        {!loaded ? <p className="list-message">正在载入任务…</p> : filtered.length === 0 ? <p className="list-message">{query ? '没有匹配的模拟器。' : filter === 'completed' ? '完成的模拟器会保存在这里。' : '你的第一次探索，从一个问题开始。'}</p> : filtered.map(job => <button className={`task ${active?.id === job.id ? 'selected' : ''}`} key={job.id} aria-current={active?.id === job.id ? 'true' : undefined} title={job.description} onClick={() => {setSelected(job.id); setNavOpen(false); setError('');}}><div className="task-name">{job.description}</div><div className="task-meta"><Status job={job}/><time dateTime={job.createdAt}>{stamp(job.createdAt)}</time></div></button>)}
+        {!loaded ? <p className="list-message">正在载入任务…</p> : filtered.length === 0 ? <p className="list-message">{query ? '没有匹配的模拟器。' : filter === 'completed' ? '生成的模拟器会保存在这里。' : '你的第一次探索，从一个问题开始。'}</p> : filtered.map(job => <button className={`task ${active?.id === job.id ? 'selected' : ''}`} key={job.id} aria-current={active?.id === job.id ? 'true' : undefined} title={job.description} onClick={() => {setSelected(job.id); setNavOpen(false); setError('');}}><div className="task-name">{job.description}</div><div className="task-meta"><Status job={job}/><time dateTime={job.createdAt}>{stamp(job.createdAt)}</time></div></button>)}
       </div>
       {loadError && <div className="sync-error" role="alert">{loadError}<button onClick={refresh}>重新连接</button></div>}
       <div className="sidebar-footer"><button onClick={() => setHelp(true)}><Keyboard/>使用指南<ArrowUpRight/></button><div><span>4yi 机械实验室</span><span>交互 · 理解 · 探索</span></div></div>
@@ -138,12 +152,12 @@ function App() {
         <div className={`stage-layout ${details ? 'with-details' : compare && active?.references?.length ? 'with-reference' : ''}`}>
           <section className={`viewport ${ready ? 'has-preview' : ''}`} aria-label="模拟器工作区">
             <div className="viewport-toolbar"><span><span className={`state-dot ${ready ? 'is-ready' : ''}`}/>{ready ? '交互预览' : running(active) ? currentPhase : active ? '任务状态' : '创作空间'}</span><span>{ready ? '在模型中直接操作' : running(active) ? '完成后自动显示' : '3D / Teardown'}</span></div>
-            {ready ? <iframe key={active.id} title="模拟器预览" sandbox="allow-scripts" src={preview}/> : <div className="stage-content">
+            {ready ? <><iframe key={active.id} title="模拟器预览" sandbox="allow-scripts" src={preview}/><QualityNote quality={active.quality}/></> : <div className="stage-content">
               {!loaded ? <div className="state-content"><LoaderCircle className="spin"/><h3>正在打开工作台</h3><p>读取你的模拟器和任务记录。</p></div> : running(active) ? <div className="state-content"><div className="working-mark"><Mark/><LoaderCircle className="spin"/></div><h3>{currentPhase}</h3><p>正在把你的描述转化为可交互的机械模型。<br/>你可以离开此页，稍后从任务列表继续查看。</p><div className="live-stage"><span className="state-dot"/>已开始 · {stamp(active.createdAt)}</div></div> : active ? <div className="state-content"><CircleAlert/><h3>{active.status === 'cancelled' ? '这次探索已暂停' : '这次生成没有完成'}</h3><p>{active.status === 'cancelled' ? '描述仍然保留，随时可以再次开始。' : errors[active.error] || '生成过程中遇到了问题。请重新编辑描述后再试一次。'}</p><Button variant="outline" disabled={processingImages || busy} onClick={() => reuseJob(active)}><RotateCw/>重新编辑{active.references?.length ? '并保留参考图' : '描述'}</Button></div> : <div className="welcome"><Mark/><h3>理解机械，从拆开它开始。</h3><p>描述一台机器，让运动、结构和工作原理变得直观。</p><div className="examples">{examples.map(item => <button key={item.name} onClick={() => focusPrompt(item.prompt)}><span>{item.name}<MoveUpRight/></span><small>{item.detail}</small></button>)}</div></div>}
             </div>}
           </section>
           {compare && active?.references?.length > 0 && <ReferencePanel key={active.id} job={active} onClose={() => setCompare(false)} onOpen={setZoomImage} onReuse={reuseJob} loading={processingImages || busy}/>}
-          {details && <aside className="detail-panel" aria-label="任务详情面板"><div className="detail-heading"><h2>{active ? '任务详情' : '创作提示'}</h2><button className="icon-button" aria-label="关闭任务详情" onClick={() => setDetails(false)}><X/></button></div>{active ? <><div className="detail-block"><h3>原始描述</h3><p>{active.description}</p></div><dl><div><dt>创建时间</dt><dd>{stamp(active.createdAt)}</dd></div><div><dt>当前状态</dt><dd>{labels[active.status]}</dd></div>{!running(active) && <div><dt>{ready ? '生成用时' : '运行用时'}</dt><dd>{duration(active)}</dd></div>}{ready && <div><dt>结果格式</dt><dd>交互式 HTML</dd></div>}</dl>{active.stages?.length > 0 && <div className="detail-block"><h3>生成记录</h3><ol className="stage-history">{active.stages.map((stage, i) => <li key={`${stage.at}-${i}`}><span>{phases[stage.phase]}</span><time>{new Date(stage.at).toLocaleTimeString('zh-CN', {hour12:false})}</time></li>)}</ol></div>}<div className="detail-block"><h3>继续探索</h3><p>使用模型中的控件观察运动和拆解。想看另一种结构，可以在下方创建新模拟器。</p><button className="text-button" disabled={processingImages || busy} onClick={() => reuseJob(active)}>复用描述{active.references?.length ? '与参考图' : ''}<ArrowUpRight/></button></div></> : <><div className="detail-block"><h3>从具体对象开始</h3><p>如电车马达、机械手表、液压泵。</p></div><div className="detail-block"><h3>说清楚想看什么</h3><p>外壳里的零件、传动过程，或拆解与组装的顺序。</p></div><div className="detail-block"><h3>加入可操作的细节</h3><p>调节转速、切换视角、逐步展开，帮助你观察每个动作。</p></div></>}</aside>}
+          {details && <aside className="detail-panel" aria-label="任务详情面板"><div className="detail-heading"><h2>{active ? '任务详情' : '创作提示'}</h2><button className="icon-button" aria-label="关闭任务详情" onClick={() => setDetails(false)}><X/></button></div>{active ? <><div className="detail-block"><h3>原始描述</h3><p>{active.description}</p></div><dl><div><dt>创建时间</dt><dd>{stamp(active.createdAt)}</dd></div><div><dt>当前状态</dt><dd>{labels[active.status]}</dd></div>{!running(active) && <div><dt>{ready ? '生成用时' : '运行用时'}</dt><dd>{duration(active)}</dd></div>}{ready && <div><dt>结果格式</dt><dd>交互式 HTML</dd></div>}</dl>{(ready || active.quality) && <QualityDetails quality={active.quality}/>} {active.stages?.length > 0 && <div className="detail-block"><h3>生成记录</h3><ol className="stage-history">{active.stages.map((stage, i) => <li key={`${stage.at}-${i}`}><span>{phases[stage.phase]}</span><time>{new Date(stage.at).toLocaleTimeString('zh-CN', {hour12:false})}</time></li>)}</ol></div>}<div className="detail-block"><h3>继续探索</h3><p>使用模型中的控件观察运动和拆解。想看另一种结构，可以在下方创建新模拟器。</p><button className="text-button" disabled={processingImages || busy} onClick={() => reuseJob(active)}>复用描述{active.references?.length ? '与参考图' : ''}<ArrowUpRight/></button></div></> : <><div className="detail-block"><h3>从具体对象开始</h3><p>如电车马达、机械手表、液压泵。</p></div><div className="detail-block"><h3>说清楚想看什么</h3><p>外壳里的零件、传动过程，或拆解与组装的顺序。</p></div><div className="detail-block"><h3>加入可操作的细节</h3><p>调节转速、切换视角、逐步展开，帮助你观察每个动作。</p></div></>}</aside>}
         </div>
         <form className={`composer ${dragging ? 'is-dragging' : ''}`} onSubmit={submit}
           onDragEnter={event => {if (Array.from(event.dataTransfer.types).includes('Files')) {event.preventDefault(); dragDepth.current++; setDragging(true);}}}
@@ -155,6 +169,7 @@ function App() {
           <Textarea ref={input} id="description" value={description} onChange={event => updateDescription(event.target.value)} disabled={busy} onKeyDown={event => {if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) {event.preventDefault(); void submit();}}} minLength={2} maxLength={8000} required aria-describedby="prompt-help" placeholder="比如：对照照片拆开这台马达，看看定子与转子如何配合…"/>
           {references.length > 0 && <div className="draft-references" aria-label="待提交的参考图片">{references.map(reference => <div className="draft-reference" key={reference.id}><ReferencePhoto src={reference.url} name={reference.name} onOpen={setZoomImage}/><div><span title={reference.name}>{reference.name}</span><small>已准备 · {(reference.bytes / 1024).toFixed(0)} KB</small></div><button type="button" className="icon-button" disabled={busy || processingImages} aria-label={`移除参考图 ${reference.name}`} onClick={() => {replaceReferences(referencesRef.current.filter(item => item.id !== reference.id)); setImageError('');}}><X/></button></div>)}</div>}
           <div className="composer-bottom"><div className="composer-support"><input ref={fileInput} id="reference-upload" className="file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple tabIndex={-1} aria-label="上传参考图片" disabled={busy || processingImages || references.length >= MAX_REFERENCES} onChange={event => {void addImages(event.target.files); event.target.value = '';}}/><Button type="button" variant="outline" className="upload-button" disabled={busy || processingImages || references.length >= MAX_REFERENCES} onClick={() => fileInput.current?.click()} title={references.length >= MAX_REFERENCES ? '已添加 3 张图片，请先移除再替换' : '选择参考图片，也支持拖入或粘贴图片'}>{processingImages ? <LoaderCircle className="spin"/> : <ImagePlus/>}{processingImages ? '处理图片中' : `参考图片${references.length ? ` ${references.length}/3` : ''}`}</Button><p id="prompt-help">{helper}</p></div><Button type="submit" disabled={busy || processingImages || description.trim().length < 2 || Boolean(ongoing)}>{busy ? <LoaderCircle className="spin"/> : <ArrowUp/>}{busy ? '正在提交' : '生成模拟器'}</Button></div>
+          <p className="creation-note">生成后请对照参考图检查结构，并试用运动与拆解控件。</p>
           <p className="upload-hint">最多 3 张 JPG、PNG 或 WebP，单张原图 ≤ 12 MB。支持拖入、粘贴；提交后用于模型分析。</p>
           {imageError && <div className="form-error" role="alert"><CircleAlert/>{imageError}</div>}{error && <div className="form-error" role="alert"><CircleAlert/>{error}</div>}
         </form>
@@ -162,7 +177,7 @@ function App() {
       </main>
     </div>
     <dialog ref={imageDialog} className="image-dialog" aria-label="参考图片大图" onCancel={() => setZoomImage(null)} onClick={event => {if (event.target === event.currentTarget) setZoomImage(null);}}><div className="detail-heading"><h2>{zoomImage?.name || '参考图片'}</h2><button type="button" className="icon-button" aria-label="关闭参考图片大图" onClick={() => setZoomImage(null)}><X/></button></div>{zoomImage && <img src={zoomImage.src} alt={zoomImage.name}/>}</dialog>
-    <dialog ref={helpDialog} onCancel={() => setHelp(false)} onClick={e => {if (e.target === e.currentTarget) setHelp(false);}} className="help-dialog"><div className="detail-heading"><h2>开始你的机械探索</h2><button className="icon-button" aria-label="关闭使用指南" onClick={() => setHelp(false)}><X/></button></div><ol><li><strong>描述对象，加入参考图</strong><p>至少输入 2 个字，可上传、拖入或粘贴最多 3 张产品照片。图片会参与模型分析，草稿图片刷新后需重新添加。</p></li><li><strong>对照结构分析</strong><p>图中可见、结构推测与无法确认的部分会分别列出。提交后参考图与任务一起保存。</p></li><li><strong>操作与保存</strong><p>完成后直接在预览里体验，也可打开独立窗口或下载 HTML。</p></li></ol><Button onClick={() => {setHelp(false); focusPrompt();}}>开始探索<ArrowUpRight/></Button></dialog>
+    <dialog ref={helpDialog} onCancel={() => setHelp(false)} onClick={e => {if (e.target === e.currentTarget) setHelp(false);}} className="help-dialog"><div className="detail-heading"><h2>开始你的机械探索</h2><button className="icon-button" aria-label="关闭使用指南" onClick={() => setHelp(false)}><X/></button></div><ol><li><strong>描述对象，加入参考图</strong><p>至少输入 2 个字，可上传、拖入或粘贴最多 3 张产品照片。图片会参与模型分析，草稿图片刷新后需重新添加。</p></li><li><strong>对照结构分析</strong><p>图中可见、结构推测与无法确认的部分会分别列出。提交后参考图与任务一起保存。</p></li><li><strong>操作与保存</strong><p>生成完成后可预览、打开独立窗口或下载 HTML。结果下方会说明画面与交互是否经过检查，未检查时请对照参考图并试用控件。</p></li></ol><Button onClick={() => {setHelp(false); focusPrompt();}}>开始探索<ArrowUpRight/></Button></dialog>
   </div>;
 }
 createRoot(document.getElementById('root')).render(<App/>);

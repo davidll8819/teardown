@@ -4,14 +4,31 @@ import path from 'node:path';
 import {normalizeAnalysis, normalizeReferences} from './references.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const publicJob = ({id, description, status, createdAt, updatedAt, error, phase, stages, references, analysis}) => ({id, description, status, createdAt, updatedAt, ...(error ? {error} : {}), ...(phase ? {phase} : {}), ...(stages ? {stages} : {}), ...(references?.length ? {references} : {}), ...(analysis ? {analysis} : {})});
+function normalizeQuality(value, visualReviewed = false) {
+  const quality = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  const attempt = value => Number.isInteger(value) ? Math.max(0, Math.min(value, 3)) : 0;
+  const check = value => ['passed', 'failed'].includes(value) ? value : 'not_run';
+  const feedback = Array.isArray(quality.feedback) ? quality.feedback.slice(0, 3).filter(item => item && typeof item === 'object' && typeof item.feedback === 'string').map(item => ({
+    attempt: attempt(item.attempt),
+    passed: item.passed === true,
+    feedback: item.feedback.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim().slice(0, 1000),
+  })) : [];
+  return {
+    compile: quality.compile === 'passed' ? 'passed' : 'not_run',
+    visual: !value && visualReviewed === true ? 'passed' : check(quality.visual),
+    interaction: check(quality.interaction),
+    reviewAttempts: attempt(quality.reviewAttempts),
+    feedback,
+  };
+}
+const publicJob = ({id, description, status, createdAt, updatedAt, error, phase, stages, references, analysis, quality, visualReviewed}) => ({id, description, status, createdAt, updatedAt, ...(error ? {error} : {}), ...(phase ? {phase} : {}), ...(stages ? {stages} : {}), ...(references?.length ? {references} : {}), ...(analysis ? {analysis} : {}), ...(quality || status === 'completed' ? {quality: normalizeQuality(quality, visualReviewed)} : {})});
 const phases = new Set(['analyzing', 'generating', 'working', 'building', 'reviewing']);
 function failureCode(error) {
   if (error?.status === 401 || error?.status === 403) return 'gateway_auth_failed';
   if (error?.status === 400) return 'gateway_request_invalid';
   if (error?.status === 402) return 'balance_required';
   const code = error?.code || error?.message;
-  return ['gateway_configuration_missing', 'gateway_timeout', 'gateway_unreachable', 'model_did_not_call_tools', 'agent_step_limit', 'reference_analysis_invalid'].includes(code) ? code : 'generation_failed';
+  return ['gateway_configuration_missing', 'gateway_timeout', 'gateway_unreachable', 'model_did_not_call_tools', 'agent_step_limit', 'reference_analysis_invalid', 'visual_review_limit', 'visual_review_invalid', 'visual_response_invalid', 'visual_configuration_invalid'].includes(code) ? code : 'generation_failed';
 }
 
 /** Disk-backed jobs. A process owns a single store; scopes are never supplied as paths. */
@@ -102,12 +119,16 @@ export function createJobStore({directory, generate, now = () => new Date().toIS
         // public task metadata.
         if (result.sources !== undefined) await writeFile(path.join(dir, 'project.json'), JSON.stringify(result.sources), {mode: 0o600});
         await writeFile(path.join(dir, 'simulator.html'), result.html, {mode: 0o600});
+        job.quality = normalizeQuality(result.quality, result.visualReviewed);
         job.status = 'completed';
       } catch (error) {
         acceptingUpdates = false;
         job.status = controller.signal.aborted ? 'cancelled' : 'failed';
         if (!controller.signal.aborted) console.error('generation failed:', typeof error?.code === 'string' ? error.code : typeof error?.message === 'string' && /^[a-z_]+$/.test(error.message) ? error.message : 'unknown', 'status:', Number.isInteger(error?.status) ? error.status : 'none');
-        if (!controller.signal.aborted) job.error = failureCode(error);
+        if (!controller.signal.aborted) {
+          job.error = failureCode(error);
+          if (error?.quality) job.quality = normalizeQuality(error.quality);
+        }
       } finally {
         acceptingUpdates = false;
         await progressWrites.catch(() => {});
