@@ -29,7 +29,7 @@ jobs:
           docker run -d --name teardown-check -p 127.0.0.1:3000:3000 \
             -v teardown-check-data:/data \
             -e FOURYI_ROUTER_IDENTITY_REQUIRED=1 \
-            -e FOURYI_ROUTER_IDENTITY_KEY=ci-only-not-a-platform-secret-0123456789 \
+            -e FOURYI_ROUTER_IDENTITY_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
             -e XCLAW_APP_HOSTNAME=ci.invalid \
             -e OPENAI_API_BASE=https://example.invalid/v1 \
             -e OPENAI_API_KEY=ci-only-no-real-model-calls \
