@@ -1,0 +1,11 @@
+.git
+node_modules
+teardown-out
+web-dist
+.taste-skill
+__pycache__
+*.pyc
+.local
+.env
+.env.*
+*.env

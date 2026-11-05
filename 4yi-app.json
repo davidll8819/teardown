@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "services": [
+    {
+      "name": "web",
+      "dockerfile": "Dockerfile",
+      "context": ".",
+      "route": "public",
+      "port": 3000,
+      "healthPath": "/healthz",
+      "env": {
+        "FOURYI_ROUTER_IDENTITY_REQUIRED": "1",
+        "TEARDOWN_REASONING_EFFORT": "none"
+      },
+      "storage": { "sizeGb": 1, "mountPath": "/data", "fsGroup": 1000 },
+      "resources": { "cpu": 1, "memoryMb": 2048 }
+    }
+  ],
+  "models": [
+    { "env": "TEXT_MODEL", "type": "chat", "default": "gpt-6-sol" }
+  ]
+}

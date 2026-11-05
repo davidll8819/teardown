@@ -1,0 +1,51 @@
+name: 4yi deployment checks
+on:
+  push:
+    branches: ['codex/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - run: npm run test:web
+      - run: npm run build:web
+      - name: Build Linux container and verify health and storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 -t teardown:check .
+          docker volume create teardown-check-data
+          trap 'docker logs teardown-check || true; docker rm -f teardown-check || true; docker volume rm teardown-check-data || true' EXIT
+          docker run -d --name teardown-check -p 127.0.0.1:3000:3000 \
+            -v teardown-check-data:/data \
+            -e FOURYI_ROUTER_IDENTITY_REQUIRED=1 \
+            -e FOURYI_ROUTER_IDENTITY_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
+            -e XCLAW_APP_HOSTNAME=ci.invalid \
+            -e OPENAI_API_BASE=https://example.invalid/v1 \
+            -e OPENAI_API_KEY=ci-only-no-real-model-calls \
+            -e TEXT_MODEL=gpt-6-sol \
+            -e TEARDOWN_REASONING_EFFORT=none teardown:check
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/healthz; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3000/healthz
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/api/jobs)" = 401
+          docker exec teardown-check node --input-type=module -e "import fs from 'node:fs'; if(process.getuid()===0) throw Error('root'); fs.writeFileSync('/data/ci-probe','persisted');"
+          docker restart teardown-check
+          for attempt in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/healthz; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:3000/healthz
+          docker exec teardown-check node --input-type=module -e "import fs from 'node:fs'; if(fs.readFileSync('/data/ci-probe','utf8')!=='persisted') throw Error('storage');"
