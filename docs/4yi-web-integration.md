@@ -1,4 +1,14 @@
-# 4yi Web integration: implementation notes
+# 3D simulator — 4yi Web integration
+
+Application display name: **3D simulator**. This release candidate is based on GitHub branch `codex/4yi-marketplace`, commit `d7e8531504bc0739e6250f99595357457764622e`, with the user-requested rename. Use this display name for the 4yi DEV application; service name `web`, runtime variables and deployment declaration fields remain the platform integration contract.
+
+## 2026-11-06 DEV compatibility fixes
+
+- Preserve the reference configuration: one Dedicated public service, port 3000, `/healthz`, non-root UID 1000, 1 CPU / 2048 MB, and a 1 GB `/data` volume. Keep required router signatures and the selected `gpt-6-sol` model slot; install-time gateway credentials remain server-only.
+- Preview reads now report authorization, missing-artifact, storage, redirect and timeout failures. Authorized HTML is capped at 8 MiB and displayed in an opaque `allow-scripts` sandbox with a fixed CSP. Generated documents report startup exceptions and missing rendering instead of silently staying blank. These measures are not a complete execution/network isolation certification.
+- A definite HTTP 413 on reference submission enables a scoped, signed chunk protocol (8,192 Base64 characters per chunk, requests below 12 KiB). Temporary storage is bounded in memory and expires after 10 minutes. Refresh or process restart during upload requires resubmission; accepted jobs and references remain persisted under `/data`. An uncertain job submission is never retried automatically.
+- Authenticated `GET /api/runtime` returns a reproducible source fingerprint, a per-process instance identifier, the selected model and a hashed user/organization scope. It returns no credentials, raw identity IDs or disk paths. Compare it with `web-dist/build-info.json` from the release build when diagnosing mismatched installed versions.
+- Local unit, HTTP and browser fixtures validate failure handling; they do not replace a real DEV install, generation, reference upload, restart test or multi-account isolation evidence. The optional local visual-review worker is not enabled in this deployment.
 
 Status: incomplete Web adaptation. The Web UI, scoped task store, bounded multi-file authoring tools, and restricted browser preview are implemented. A DEV test version was imported, but it is not the full upstream agent workflow or a production-quality release. Later dated evidence below supersedes earlier local-only observations.
 

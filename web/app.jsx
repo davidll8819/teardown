@@ -2,11 +2,22 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {Plus, ArrowUp, ArrowUpRight, Search, PanelLeftOpen, SlidersHorizontal, X, Download, RotateCw, Check, CircleAlert, LoaderCircle, Square, ChevronRight, Layers3, Keyboard, MoveUpRight, ImagePlus, Images, Expand} from 'lucide-react';
 import {Button, Textarea} from './ui.jsx';
-import {prepareReference, restoreReferences, MAX_REFERENCES, MAX_REFERENCE_TOTAL} from './reference-images.js';
+import {prepareReference, restoreReferences, createJobWithReferences, MAX_REFERENCES, MAX_REFERENCE_TOTAL} from './reference-images.js';
+import {requestJson as api, RequestError, createReadCoordinator} from './requests.mjs';
+import {SimulatorPreview} from './simulator-preview.jsx';
+import {readPreview, previewMessage} from './preview-loader.mjs';
 import './style.css';
 
 const labels = {queued: '等待生成', generating: '生成中', completed: '生成完成', failed: '生成失败', cancelled: '已取消'};
 const phases = {analyzing: '分析参考图片', generating: '构思机械结构', working: '编写与完善模拟器', building: '编译交互页面', reviewing: '检查渲染效果'};
+const submissionErrors = {
+  job_already_running: '已有任务正在生成，请等待完成。',
+  job_capacity_reached: '当前任务较多，请稍后重试。',
+  reference_description_too_large: '参考图上传时描述过长，请缩短到约 3000 字后重试。',
+  reference_upload_capacity: '参考图片上传较多，请稍后重试。',
+  reference_upload_rate_limited: '参考图片提交过于频繁，请稍后重试。',
+  reference_upload_not_found: '参考图片暂存已过期或服务已重启，请重新提交。',
+};
 const errors = {
   gateway_configuration_missing: '尚未配置模型密钥。请完成网关配置后重新生成。',
   gateway_auth_failed: '模型密钥认证失败。请检查密钥是否完整、有效。',
@@ -43,7 +54,6 @@ function QualityDetails({quality}) {
   const label = status => status === 'passed' ? '检查通过' : status === 'failed' ? '检查未通过' : '未检查';
   return <div className="detail-block"><h3>检查情况</h3><p>画面：{label(quality?.visual)}<br/>交互：{label(quality?.interaction)}</p>{quality?.feedback?.length > 0 && <ol className="stage-history quality-feedback">{quality.feedback.map((review, index) => <li key={index}><span>第 {review.attempt || index + 1} 次检查 · {review.passed ? '通过' : '需要改进'}</span><p>{review.feedback || '未提供补充说明。'}</p></li>)}</ol>}<p>生成完成表示已得到页面；机械精度与实际装配仍需另行验证。</p></div>;
 }
-async function api(url, options) { const r = await fetch(url, options); const value = await r.json(); if (!r.ok) throw new Error(value.error || 'request_failed'); return value; }
 const referenceUrl = (job, reference) => `/api/jobs/${job.id}/references/${reference.id}`;
 function ReferencePhoto({src, name, onOpen}) {
   const [failed, setFailed] = useState(false), [retry, setRetry] = useState(0);
@@ -59,12 +69,34 @@ function App() {
   const [description, setDescription] = useState(() => {try {return sessionStorage.getItem('teardown-draft') || '';} catch {return '';}});
   const [jobs, setJobs] = useState([]), [loaded, setLoaded] = useState(false);
   const [selected, setSelected] = useState(undefined), [busy, setBusy] = useState(false), [error, setError] = useState(''), [loadError, setLoadError] = useState('');
+  const [submissionUncertain, setSubmissionUncertain] = useState(() => {try {return sessionStorage.getItem('teardown-submit-pending') === '1';} catch {return false;}});
   const [query, setQuery] = useState(''), [filter, setFilter] = useState('all'), [navOpen, setNavOpen] = useState(false), [details, setDetails] = useState(false), [help, setHelp] = useState(false), [downloading, setDownloading] = useState(false);
   const [references, setReferences] = useState([]), [processingImages, setProcessingImages] = useState(false), [imageError, setImageError] = useState(''), [dragging, setDragging] = useState(false), [compare, setCompare] = useState(false), [zoomImage, setZoomImage] = useState(null);
   const input = useRef(null), submitLock = useRef(false), helpDialog = useRef(null), fileInput = useRef(null), imageDialog = useRef(null), referencesRef = useRef([]), imageLock = useRef(false), imageEpoch = useRef(0), dragDepth = useRef(0);
   const descriptionRef = useRef(description), descriptionRevision = useRef(0);
-  const refresh = useCallback(async () => {try {const value = await api('/api/jobs'); setJobs(value.jobs); setLoaded(true); setLoadError('');} catch {setLoadError('任务暂时无法同步，请重试。'); setLoaded(true);}}, []);
-  useEffect(() => {void refresh(); const timer = setInterval(refresh, 3000); return () => clearInterval(timer);}, [refresh]);
+  const reads = useRef(null), submitAbort = useRef(null), submitGeneration = useRef(0);
+  const refresh = useCallback(() => reads.current?.refresh(), []);
+  useEffect(() => {
+    const coordinator = createReadCoordinator({
+      load: async ({signal}) => {
+        const value = await api('/api/jobs', {signal});
+        if (!Array.isArray(value?.jobs)) throw new RequestError('request_invalid_response');
+        return value.jobs;
+      },
+      onValue: value => {setJobs(value); setLoaded(true); setLoadError('');},
+      onError: () => {setLoadError('任务暂时无法同步，请重试。'); setLoaded(true);},
+    });
+    reads.current = coordinator;
+    void refresh();
+    const timer = setInterval(refresh, 3000);
+    const reconnect = () => {if (document.visibilityState !== 'hidden') {coordinator.invalidate(); void refresh();}};
+    window.addEventListener('online', reconnect); document.addEventListener('visibilitychange', reconnect);
+    return () => {
+      clearInterval(timer); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect);
+      coordinator.dispose(); if (reads.current === coordinator) reads.current = null;
+      submitGeneration.current++; submitAbort.current?.abort();
+    };
+  }, [refresh]);
   useEffect(() => {try {sessionStorage.setItem('teardown-draft', description);} catch {}}, [description]);
   useEffect(() => {if (help) helpDialog.current?.showModal(); else helpDialog.current?.close();}, [help]);
   useEffect(() => {if (zoomImage) imageDialog.current?.showModal(); else imageDialog.current?.close();}, [zoomImage]);
@@ -85,7 +117,11 @@ function App() {
     referencesRef.current.forEach(reference => {if (!next.some(item => item.url === reference.url)) URL.revokeObjectURL(reference.url);});
     referencesRef.current = next; setReferences(next);
   }
-  function newJob() {if (submitLock.current) return; imageEpoch.current++; replaceReferences([]); setImageError(''); setSelected(null); setError(''); focusPrompt('');}
+  function rememberSubmission(uncertain) {
+    setSubmissionUncertain(uncertain);
+    try {if (uncertain) sessionStorage.setItem('teardown-submit-pending', '1'); else sessionStorage.removeItem('teardown-submit-pending');} catch {}
+  }
+  function newJob() {if (submitLock.current) return; imageEpoch.current++; replaceReferences([]); setImageError(''); setSelected(null); setError(''); rememberSubmission(false); focusPrompt('');}
   async function addImages(files) {
     if (imageLock.current || submitLock.current) return;
     const selectedFiles = Array.from(files || []);
@@ -119,21 +155,46 @@ function App() {
     event?.preventDefault();
     if (submitLock.current || imageLock.current || description.trim().length < 2 || description.length > 8000 || ongoing) return;
     submitLock.current = true; setBusy(true); setError('');
-    try {const job = await api('/api/jobs', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({description: description.trim(), references: referencesRef.current.map(({name, mimeType, data}) => ({name, mimeType, data}))})}); setJobs(previous => [job, ...previous.filter(j => j.id !== job.id)]); setSelected(job.id); updateDescription(''); replaceReferences([]); setImageError(''); await refresh();}
-    catch (err) {setError(err.message === 'job_already_running' ? '已有任务正在生成，请等待完成。' : err.message === 'job_capacity_reached' ? '当前任务较多，请稍后重试。' : /reference|image|body_too_large/.test(err.message) ? '参考图片未被接受，请检查图片格式、大小后重试。' : '提交失败，请检查网络和描述后重试。');}
-    finally {submitLock.current = false; setBusy(false);}
+    // Reloading during a POST must not silently turn an uncertain submission
+    // into an apparently safe fresh one. Store no image or identity data here.
+    try {sessionStorage.setItem('teardown-submit-pending', '1');} catch {}
+    const generation = ++submitGeneration.current, controller = new AbortController();
+    submitAbort.current = controller;
+    try {
+      const job = await createJobWithReferences(description.trim(), referencesRef.current, {request: api, signal: controller.signal});
+      if (!job || typeof job.id !== 'string' || typeof job.description !== 'string' || !Object.hasOwn(labels, job.status)) throw new RequestError('request_invalid_response', {uncertain: true});
+      if (generation !== submitGeneration.current) return;
+      // An older list response must not erase this accepted job. A follow-up
+      // list read is independent of submission and cannot hold its UI lock.
+      reads.current?.invalidate();
+      setJobs(previous => [job, ...previous.filter(j => j.id !== job.id)]); setSelected(job.id);
+      updateDescription(''); replaceReferences([]); setImageError(''); rememberSubmission(false);
+      void refresh();
+    } catch (err) {
+      if (generation !== submitGeneration.current) return;
+      if (err.uncertain) {
+        // Aborting fetch does not cancel a server-side creation. Do not match
+        // by description or retry the POST: either would invent certainty.
+        rememberSubmission(true); reads.current?.invalidate(); void refresh();
+      } else {
+        if (!submissionUncertain) rememberSubmission(false);
+        setError(submissionErrors[err.message] || (/reference|image|body_too_large/.test(err.message) ? '参考图片未被接受，请检查图片格式、大小后重试。' : '提交失败，请检查网络和描述后重试。'));
+      }
+    } finally {
+      if (generation === submitGeneration.current) {submitAbort.current = null; submitLock.current = false; setBusy(false);}
+    }
   }
   async function cancel(id) {try {await api(`/api/jobs/${id}/cancel`, {method: 'POST'}); await refresh();} catch {setError('取消未成功，请刷新任务后重试。');}}
   async function download() {
     setDownloading(true); setError('');
-    try {const r = await fetch(preview); if (!r.ok) throw new Error(); const url = URL.createObjectURL(await r.blob()); const link = document.createElement('a'); link.href = url; link.download = `teardown-${active.id.slice(0,8)}.html`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);}
-    catch {setError('下载未成功，请稍后重试。');} finally {setDownloading(false);}
+    try {const html = await readPreview(preview); const url = URL.createObjectURL(new Blob([html], {type: 'text/html;charset=utf-8'})); const link = document.createElement('a'); link.href = url; link.download = `teardown-${active.id.slice(0,8)}.html`; link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);}
+    catch (err) {setError(`下载未成功。${previewMessage(err)}`);} finally {setDownloading(false);}
   }
   const currentPhase = phases[active?.phase] || '构思与生成模拟器';
   const helper = processingImages ? '正在处理参考图，完成后即可提交。' : ongoing ? '任务正在生成，你可以先准备下一个描述。' : description.trim().length === 1 ? '再补充至少 1 个字，即可生成。' : references.length && !description.trim() ? '再写一句想分析的内容（至少 2 个字），即可生成。' : references.length ? '将结合参考图分析外形与结构，再生成展示模型。' : '描述机械对象、工作原理，或你想拆开的部分。';
   return <div className="app-shell">
     <aside className={`sidebar ${navOpen ? 'is-open' : ''}`} aria-label="任务导航">
-      <div className="brand"><Mark/><div><strong>4yi <span>Teardown</span></strong><small>机械探索工作台</small></div><button className="icon-button mobile-close" aria-label="关闭任务列表" onClick={() => setNavOpen(false)}><X/></button></div>
+      <div className="brand"><Mark/><div><strong>3D <span>simulator</span></strong><small>机械探索工作台</small></div><button className="icon-button mobile-close" aria-label="关闭任务列表" onClick={() => setNavOpen(false)}><X/></button></div>
       <Button className="new-button" variant="outline" disabled={busy} onClick={newJob}><Plus/>新建模拟器<span className="new-key">＋</span></Button>
       <div className="library-heading"><h2>我的模拟器</h2><button className="icon-button" aria-label="刷新任务列表" title="刷新任务列表" onClick={refresh}><RotateCw/></button></div>
       <label className="search"><Search/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索机械或描述" aria-label="搜索任务"/>{query && <button aria-label="清除搜索" onClick={() => setQuery('')}><X/></button>}</label>
@@ -142,7 +203,7 @@ function App() {
         {!loaded ? <p className="list-message">正在载入任务…</p> : filtered.length === 0 ? <p className="list-message">{query ? '没有匹配的模拟器。' : filter === 'completed' ? '生成的模拟器会保存在这里。' : '你的第一次探索，从一个问题开始。'}</p> : filtered.map(job => <button className={`task ${active?.id === job.id ? 'selected' : ''}`} key={job.id} aria-current={active?.id === job.id ? 'true' : undefined} title={job.description} onClick={() => {setSelected(job.id); setNavOpen(false); setError('');}}><div className="task-name">{job.description}</div><div className="task-meta"><Status job={job}/><time dateTime={job.createdAt}>{stamp(job.createdAt)}</time></div></button>)}
       </div>
       {loadError && <div className="sync-error" role="alert">{loadError}<button onClick={refresh}>重新连接</button></div>}
-      <div className="sidebar-footer"><button onClick={() => setHelp(true)}><Keyboard/>使用指南<ArrowUpRight/></button><div><span>4yi 机械实验室</span><span>交互 · 理解 · 探索</span></div></div>
+      <div className="sidebar-footer"><button onClick={() => setHelp(true)}><Keyboard/>使用指南<ArrowUpRight/></button><div><span>3D simulator</span><span>交互 · 理解 · 探索</span></div></div>
     </aside>
     {navOpen && <button className="nav-scrim" aria-label="关闭任务列表遮罩" onClick={() => setNavOpen(false)}/>}
     <div className="workspace">
@@ -151,8 +212,8 @@ function App() {
         <div className="object-header"><div className="object-title"><div className="object-type"><Layers3/><span>{active ? '交互式机械模型' : '从想象，到看得见的原理'}</span></div><h2 title={active?.description}>{active?.description || '今天，拆开哪台机器？'}</h2></div><div className="object-actions">{active?.references?.length > 0 && <Button variant="outline" aria-controls="reference-panel" aria-expanded={compare} onClick={() => {setCompare(!compare); setDetails(false);}}><Images/><span>参考对照</span></Button>}{ready && <><Button variant="outline" onClick={download} disabled={downloading}><Download/><span>{downloading ? '下载中' : '下载 HTML'}</span></Button><a className="button-link" href={preview} target="_blank" rel="noopener noreferrer"><ArrowUpRight/><span>独立窗口</span></a></>}{running(active) && <Button variant="outline" onClick={() => cancel(active.id)}><Square/>取消生成</Button>}</div></div>
         <div className={`stage-layout ${details ? 'with-details' : compare && active?.references?.length ? 'with-reference' : ''}`}>
           <section className={`viewport ${ready ? 'has-preview' : ''}`} aria-label="模拟器工作区">
-            <div className="viewport-toolbar"><span><span className={`state-dot ${ready ? 'is-ready' : ''}`}/>{ready ? '交互预览' : running(active) ? currentPhase : active ? '任务状态' : '创作空间'}</span><span>{ready ? '在模型中直接操作' : running(active) ? '完成后自动显示' : '3D / Teardown'}</span></div>
-            {ready ? <><iframe key={active.id} title="模拟器预览" sandbox="allow-scripts" src={preview}/><QualityNote quality={active.quality}/></> : <div className="stage-content">
+            <div className="viewport-toolbar"><span><span className={`state-dot ${ready ? 'is-ready' : ''}`}/>{ready ? '交互预览' : running(active) ? currentPhase : active ? '任务状态' : '创作空间'}</span><span>{ready ? '在模型中直接操作' : running(active) ? '完成后自动显示' : '3D simulator'}</span></div>
+            {ready ? <><SimulatorPreview key={active.id} url={preview} onRefresh={refresh}/><QualityNote quality={active.quality}/></> : <div className="stage-content">
               {!loaded ? <div className="state-content"><LoaderCircle className="spin"/><h3>正在打开工作台</h3><p>读取你的模拟器和任务记录。</p></div> : running(active) ? <div className="state-content"><div className="working-mark"><Mark/><LoaderCircle className="spin"/></div><h3>{currentPhase}</h3><p>正在把你的描述转化为可交互的机械模型。<br/>你可以离开此页，稍后从任务列表继续查看。</p><div className="live-stage"><span className="state-dot"/>已开始 · {stamp(active.createdAt)}</div></div> : active ? <div className="state-content"><CircleAlert/><h3>{active.status === 'cancelled' ? '这次探索已暂停' : '这次生成没有完成'}</h3><p>{active.status === 'cancelled' ? '描述仍然保留，随时可以再次开始。' : errors[active.error] || '生成过程中遇到了问题。请重新编辑描述后再试一次。'}</p><Button variant="outline" disabled={processingImages || busy} onClick={() => reuseJob(active)}><RotateCw/>重新编辑{active.references?.length ? '并保留参考图' : '描述'}</Button></div> : <div className="welcome"><Mark/><h3>理解机械，从拆开它开始。</h3><p>描述一台机器，让运动、结构和工作原理变得直观。</p><div className="examples">{examples.map(item => <button key={item.name} onClick={() => focusPrompt(item.prompt)}><span>{item.name}<MoveUpRight/></span><small>{item.detail}</small></button>)}</div></div>}
             </div>}
           </section>
@@ -168,7 +229,8 @@ function App() {
           <div className="composer-title"><label htmlFor="description">{active ? '开始下一次探索' : '描述你的机械想法'}</label><span>{dragging ? '松开添加参考图' : '描述 + 参考图'}</span></div>
           <Textarea ref={input} id="description" value={description} onChange={event => updateDescription(event.target.value)} disabled={busy} onKeyDown={event => {if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !event.nativeEvent.isComposing) {event.preventDefault(); void submit();}}} minLength={2} maxLength={8000} required aria-describedby="prompt-help" placeholder="比如：对照照片拆开这台马达，看看定子与转子如何配合…"/>
           {references.length > 0 && <div className="draft-references" aria-label="待提交的参考图片">{references.map(reference => <div className="draft-reference" key={reference.id}><ReferencePhoto src={reference.url} name={reference.name} onOpen={setZoomImage}/><div><span title={reference.name}>{reference.name}</span><small>已准备 · {(reference.bytes / 1024).toFixed(0)} KB</small></div><button type="button" className="icon-button" disabled={busy || processingImages} aria-label={`移除参考图 ${reference.name}`} onClick={() => {replaceReferences(referencesRef.current.filter(item => item.id !== reference.id)); setImageError('');}}><X/></button></div>)}</div>}
-          <div className="composer-bottom"><div className="composer-support"><input ref={fileInput} id="reference-upload" className="file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple tabIndex={-1} aria-label="上传参考图片" disabled={busy || processingImages || references.length >= MAX_REFERENCES} onChange={event => {void addImages(event.target.files); event.target.value = '';}}/><Button type="button" variant="outline" className="upload-button" disabled={busy || processingImages || references.length >= MAX_REFERENCES} onClick={() => fileInput.current?.click()} title={references.length >= MAX_REFERENCES ? '已添加 3 张图片，请先移除再替换' : '选择参考图片，也支持拖入或粘贴图片'}>{processingImages ? <LoaderCircle className="spin"/> : <ImagePlus/>}{processingImages ? '处理图片中' : `参考图片${references.length ? ` ${references.length}/3` : ''}`}</Button><p id="prompt-help">{helper}</p></div><Button type="submit" disabled={busy || processingImages || description.trim().length < 2 || Boolean(ongoing)}>{busy ? <LoaderCircle className="spin"/> : <ArrowUp/>}{busy ? '正在提交' : '生成模拟器'}</Button></div>
+          <div className="composer-bottom"><div className="composer-support"><input ref={fileInput} id="reference-upload" className="file-input" type="file" accept="image/jpeg,image/png,image/webp" multiple tabIndex={-1} aria-label="上传参考图片" disabled={busy || processingImages || references.length >= MAX_REFERENCES} onChange={event => {void addImages(event.target.files); event.target.value = '';}}/><Button type="button" variant="outline" className="upload-button" disabled={busy || processingImages || references.length >= MAX_REFERENCES} onClick={() => fileInput.current?.click()} title={references.length >= MAX_REFERENCES ? '已添加 3 张图片，请先移除再替换' : '选择参考图片，也支持拖入或粘贴图片'}>{processingImages ? <LoaderCircle className="spin"/> : <ImagePlus/>}{processingImages ? '处理图片中' : `参考图片${references.length ? ` ${references.length}/3` : ''}`}</Button><p id="prompt-help">{helper}</p></div><Button type="submit" disabled={busy || processingImages || description.trim().length < 2 || Boolean(ongoing)}>{busy ? <LoaderCircle className="spin"/> : <ArrowUp/>}{busy ? '正在提交' : submissionUncertain ? '仍要再次提交' : '生成模拟器'}</Button></div>
+          {submissionUncertain && !busy && <div className="form-error" role="status"><CircleAlert/><div>提交结果尚未确认，描述已保留。请先检查任务列表；再次提交可能重复创建任务。<button type="button" className="text-button" onClick={refresh}><RotateCw/>检查任务列表</button></div></div>}
           <p className="creation-note">生成后请对照参考图检查结构，并试用运动与拆解控件。</p>
           <p className="upload-hint">最多 3 张 JPG、PNG 或 WebP，单张原图 ≤ 12 MB。支持拖入、粘贴；提交后用于模型分析。</p>
           {imageError && <div className="form-error" role="alert"><CircleAlert/>{imageError}</div>}{error && <div className="form-error" role="alert"><CircleAlert/>{error}</div>}

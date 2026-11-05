@@ -34,7 +34,64 @@ export async function compileSimulator(source) {
 
 export function makeSimulatorHtml(script) {
   const safeScript = script.replace(/<\/script/gi, '<\\/script');
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"><title>Teardown simulator</title><style>html,body{margin:0;width:100%;height:100%;overflow:hidden}#app{width:100%;height:100%}</style></head><body><main id="app"></main><script>${safeScript}</script></body></html>`;
+  // Install diagnostics in a separate script BEFORE the generated bundle. A
+  // syntax/constructor/WebGL error in that bundle must not erase the only UI.
+  // This is a local display hint, never runtime/visual certification. It sends
+  // no messages, changes no job state and does not suppress browser errors.
+  const bootstrap = `(() => {
+    const panel = document.getElementById('teardown-boot');
+    const heading = document.getElementById('teardown-boot-heading');
+    const detail = document.getElementById('teardown-boot-detail');
+    const retry = document.getElementById('teardown-boot-retry');
+    let fatal = false, frame = 0, deadline = 0;
+    const message = value => {
+      try { return String(value && value.message || value || '未知启动错误').slice(0, 320); }
+      catch { return '无法读取错误详情'; }
+    };
+    const showError = (value, state = 'error') => {
+      if (fatal) return;
+      fatal = state === 'error';
+      panel.hidden = false;
+      panel.dataset.state = state;
+      panel.setAttribute('role', 'alert');
+      heading.textContent = state === 'timeout' ? '模型尚未成功显示' : '模型启动或运行失败';
+      detail.textContent = message(value);
+      retry.hidden = false;
+      clearTimeout(deadline);
+      if (fatal) cancelAnimationFrame(frame);
+    };
+    window.addEventListener('error', event => showError(event.error || event.message));
+    window.addEventListener('unhandledrejection', event => showError(event.reason));
+    retry.addEventListener('click', () => location.reload());
+    deadline = setTimeout(() => showError('启动等待已超过 10 秒。请重新加载预览；若仍未显示，生成内容可能存在运行错误。', 'timeout'), 10000);
+    const observeDisplay = () => {
+      if (fatal) return;
+      try {
+        const api = window.__TEARDOWN_EXHIBIT__;
+        const state = api && typeof api.snapshot === 'function' ? api.snapshot() : null;
+        if (state && state.error) { showError(state.error); return; }
+        const canvas = document.querySelector('#app .td-exhibit canvas');
+        const bounds = canvas && canvas.getBoundingClientRect();
+        if (state && !state.disposed && bounds && bounds.width > 0 && bounds.height > 0 && canvas.width > 0 && canvas.height > 0) {
+          // Presence and dimensions only: independent browser/visual review
+          // still decides whether the result actually works and looks right.
+          clearTimeout(deadline);
+          panel.dataset.state = 'displayed';
+          panel.hidden = true;
+          return;
+        }
+      } catch (error) { showError(error); return; }
+      frame = requestAnimationFrame(observeDisplay);
+    };
+    frame = requestAnimationFrame(observeDisplay);
+  })();`;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"><title>3D simulator</title><style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden}#app{width:100%;height:100%}
+#teardown-boot{box-sizing:border-box;position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;padding:20px;overflow:auto;background:#f4f1eb;color:#252622;font:14px/1.6 Arial,"PingFang SC",sans-serif}
+#teardown-boot[hidden]{display:none!important}#teardown-boot>div{box-sizing:border-box;width:min(100%,440px);padding:24px;border:1px solid #dedbd2;border-radius:4px;background:#faf8f3}
+#teardown-boot h1{margin:0 0 12px;font-size:20px;line-height:1.4}#teardown-boot p{margin:10px 0;overflow-wrap:anywhere}#teardown-boot-detail{font-size:13px;color:#675f54}#teardown-boot small{display:block;margin-top:12px;color:#69675f;font-size:12px}
+#teardown-boot button{min-height:40px;margin-top:8px;padding:8px 14px;border:1px solid #4c4d48;border-radius:3px;background:#252622;color:#faf8f3;font:inherit;cursor:pointer}#teardown-boot button:focus-visible{outline:2px solid #b53213;outline-offset:3px}
+</style></head><body><main id="app"></main><section id="teardown-boot" data-state="loading" role="status" aria-live="polite"><div><h1 id="teardown-boot-heading">正在启动 3D 模型</h1><p id="teardown-boot-detail">若长时间未显示，可刷新此页面重试。</p><button id="teardown-boot-retry" type="button" hidden>重新加载预览</button><small>重新加载预览不会重新生成模型。</small><noscript><p>浏览器未执行脚本，无法启动交互模型。</p></noscript></div></section><script>${bootstrap}</script><script>${safeScript}</script></body></html>`;
 }
 
 const tool = (name, description, properties, required = []) => ({type: 'function', function: {name, description, parameters: {type: 'object', properties, required, additionalProperties: false}}});

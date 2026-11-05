@@ -34,6 +34,16 @@ test('bundles three and denies server and arbitrary path imports', async () => {
   await assert.rejects(compileSimulator("import x from '../paths.mjs';"));
 });
 
+test('preview diagnostics precede generated code without relaxing CSP or swallowing errors', () => {
+  const html = makeSimulatorHtml("throw new Error('bootstrap-order-marker');");
+  assert.ok(html.indexOf("addEventListener('error'") < html.indexOf('bootstrap-order-marker'));
+  assert.match(html, /addEventListener\('unhandledrejection'/);
+  assert.equal((html.match(/<main id="app"/g) || []).length, 1);
+  assert.match(html, /id="teardown-boot-retry"/);
+  assert.match(html, /script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'/);
+  assert.doesNotMatch(html, /preventDefault|postMessage|unsafe-eval|allow-same-origin/);
+});
+
 test('creates a multi-file project, repairs a build, and produces a sandboxed preview document', async () => {
   let attempts = 0;
   const plan = [

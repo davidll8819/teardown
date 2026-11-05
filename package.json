@@ -1,8 +1,8 @@
 {
-  "name": "teardown",
+  "name": "3d-simulator",
   "version": "1.0.0",
   "private": true,
-  "description": "A Claude Code skill that builds interactive 3D simulators of real machines and records them to 60 fps video.",
+  "description": "3D simulator: a web workspace for interactive mechanical explanations and reference-image analysis, adapted for the 4yi platform.",
   "license": "MIT",
   "scripts": {
     "setup": "npm install && npx playwright install chromium",

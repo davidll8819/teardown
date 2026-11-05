@@ -59,12 +59,18 @@ export function createJobStore({directory, generate, now = () => new Date().toIS
       }
       return job;
     }
-    catch { throw new Error('job_not_found'); }
+    catch (error) {
+      if (error.code === 'ENOENT' || error.message === 'job_not_found') throw new Error('job_not_found');
+      throw new Error('storage_unavailable');
+    }
   }
   async function list(scope) {
     let ids;
-    try { ids = await readdir(scopeDir(scope)); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-    const items = await Promise.all(ids.filter(id => UUID.test(id)).map(id => get(scope, id).catch(() => null)));
+    try { ids = await readdir(scopeDir(scope)); } catch (error) { if (error.code === 'ENOENT') return []; throw new Error('storage_unavailable'); }
+    const items = await Promise.all(ids.filter(id => UUID.test(id)).map(id => get(scope, id).catch(error => {
+      if (error.message === 'job_not_found') return null;
+      throw error;
+    })));
     return items.filter(Boolean).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(publicJob);
   }
   async function create(scope, description, references = []) {

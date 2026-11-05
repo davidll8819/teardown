@@ -9,6 +9,8 @@ import {createVisualReviewer} from './visual-review.mjs';
 import {createLocalVisualRenderer} from './visual-client.mjs';
 import {createRouterIdentityVerifier} from './router-identity.mjs';
 import {MAX_JOB_BODY_BYTES} from './references.mjs';
+import {createReferenceUploadStore, UPLOAD_BODY_BYTES} from './reference-uploads.mjs';
+import {createRuntimeInfo} from './runtime-info.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const mime = {'.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.svg': 'image/svg+xml', '.woff2': 'font/woff2'};
@@ -54,12 +56,12 @@ function sameOrigin(req, local) {
     return new URL(origin).host === expected;
   } catch { return false; }
 }
-export function createApp({store, local = false, verifyIdentity, dist = path.join(root, 'web-dist')}) {
-  return http.createServer(async (req, res) => {
+export function createApp({store, local = false, verifyIdentity, dist = path.join(root, 'web-dist'), uploads = createReferenceUploadStore(), runtimeInfo = () => ({})}) {
+  const app = http.createServer(async (req, res) => {
     let url;
     try { url = new URL(req.url, 'http://local'); }
     catch { return json(res, 400, {error: 'invalid_url'}); }
-    req.bodyLimit = req.method === 'POST' && url.pathname === '/api/jobs' ? MAX_JOB_BODY_BYTES : 16384;
+    req.bodyLimit = url.pathname.startsWith('/api/reference-uploads') ? UPLOAD_BODY_BYTES : req.method === 'POST' && url.pathname === '/api/jobs' ? MAX_JOB_BODY_BYTES : 16384;
     if (req.method === 'GET' && url.pathname === '/healthz') return json(res, 200, {ok: true});
     if (!local) {
       try { req.signedBody = req.method === 'GET' || req.method === 'HEAD' ? Buffer.alloc(0) : await rawBody(req); }
@@ -69,11 +71,32 @@ export function createApp({store, local = false, verifyIdentity, dist = path.joi
     const scope = scopeFor(req, local);
     if (!scope) return json(res, 401, {error: 'authentication_required'});
     try {
+      if (url.pathname === '/api/runtime' && req.method === 'GET') return json(res, 200, runtimeInfo(scope));
+      if (url.pathname === '/api/reference-uploads' && req.method === 'POST') {
+        if (!sameOrigin(req, local)) return json(res, 403, {error: 'origin_invalid'});
+        const value = await body(req);
+        return json(res, 201, uploads.begin(scope, value?.references));
+      }
+      const uploadMatch = /^\/api\/reference-uploads\/([0-9a-f-]+)(?:\/(chunks|complete))?$/.exec(url.pathname);
+      if (uploadMatch && (req.method === 'POST' || req.method === 'DELETE')) {
+        if (!sameOrigin(req, local)) return json(res, 403, {error: 'origin_invalid'});
+        if (req.method === 'DELETE' && !uploadMatch[2]) return json(res, 200, uploads.cancel(scope, uploadMatch[1]));
+        if (req.method === 'POST' && uploadMatch[2] === 'chunks') return json(res, 200, uploads.append(scope, uploadMatch[1], await body(req)));
+        if (req.method === 'POST' && uploadMatch[2] === 'complete') {
+          await body(req);
+          return json(res, 200, uploads.complete(scope, uploadMatch[1]));
+        }
+        return json(res, 404, {error: 'not_found'});
+      }
       if (url.pathname === '/api/jobs' && req.method === 'GET') return json(res, 200, {jobs: await store.list(scope)});
       if (url.pathname === '/api/jobs' && req.method === 'POST') {
         if (!sameOrigin(req, local)) return json(res, 403, {error: 'origin_invalid'});
         const value = await body(req);
         if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_json');
+        if (value.referenceUploadId !== undefined) {
+          if (value.references !== undefined) throw new Error('references_invalid');
+          return json(res, 202, await uploads.use(scope, value.referenceUploadId, references => store.create(scope, value.description, references)));
+        }
         return json(res, 202, await store.create(scope, value.description, value.references));
       }
       const cancelMatch = /^\/api\/jobs\/([0-9a-f-]+)\/cancel$/.exec(url.pathname);
@@ -100,10 +123,12 @@ export function createApp({store, local = false, verifyIdentity, dist = path.joi
       res.writeHead(200, {'content-type': mime[path.extname(name)] || 'application/octet-stream', 'x-content-type-options': 'nosniff', 'cache-control': 'no-store'}); return res.end(content);
     } catch (error) {
       const code = error?.message;
-      const status = code === 'job_not_found' || code === 'reference_not_found' || error?.code === 'ENOENT' ? 404 : code === 'body_too_large' ? 413 : ['job_already_running', 'job_capacity_reached', 'job_not_ready', 'job_not_running'].includes(code) ? 409 : ['invalid_description', 'invalid_content_type', 'invalid_json', 'references_invalid', 'reference_type_invalid', 'reference_image_invalid', 'reference_dimensions_invalid', 'reference_too_large', 'references_too_large'].includes(code) ? 400 : 500;
+      const status = code === 'storage_unavailable' ? 503 : code === 'job_not_found' || code === 'reference_not_found' || code === 'reference_upload_not_found' || error?.code === 'ENOENT' ? 404 : code === 'body_too_large' ? 413 : ['reference_upload_capacity', 'reference_upload_rate_limited'].includes(code) ? 429 : ['job_already_running', 'job_capacity_reached', 'job_not_ready', 'job_not_running', 'reference_upload_in_use', 'reference_upload_conflict', 'reference_upload_incomplete'].includes(code) ? 409 : ['invalid_description', 'invalid_content_type', 'invalid_json', 'references_invalid', 'reference_type_invalid', 'reference_image_invalid', 'reference_dimensions_invalid', 'reference_too_large', 'references_too_large', 'reference_upload_invalid'].includes(code) ? 400 : 500;
       return json(res, status, {error: status === 500 ? 'internal_error' : code});
     }
   });
+  app.on('close', () => uploads.dispose());
+  return app;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -117,5 +142,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   const visualGateway = visualUrl ? createGateway({baseUrl: process.env.OPENAI_API_BASE || process.env.OPENAI_BASE_URL, apiKey: process.env.OPENAI_API_KEY, model: process.env.TEARDOWN_VISION_MODEL || process.env.TEXT_MODEL}) : null;
   const visualReview = visualUrl ? createVisualReviewer({render: createLocalVisualRenderer({url: visualUrl}), gateway: visualGateway}) : undefined;
   const store = createJobStore({directory: dataDirectory, generate: ({description, references, signal, onProgress, onAnalysis}) => generateSimulator({gateway, description, references, signal, onProgress, onAnalysis, visualReview})});
-  createApp({store, local, verifyIdentity}).listen(Number(process.env.PORT || 3000), local ? '127.0.0.1' : '0.0.0.0');
+  const runtimeInfo = createRuntimeInfo({local, hostname: process.env.XCLAW_APP_HOSTNAME, model: process.env.TEXT_MODEL});
+  createApp({store, local, verifyIdentity, runtimeInfo}).listen(Number(process.env.PORT || 3000), local ? '127.0.0.1' : '0.0.0.0');
 }

@@ -88,3 +88,58 @@ export async function restoreReferences(job) {
     throw error;
   }
 }
+
+// Keep the ordinary upload protocol for compatible installations. Only an
+// explicit 413 proves that the inline job was rejected and permits fallback.
+// Network failures/timeouts are never retried: their submission is uncertain.
+export async function createJobWithReferences(description, references, {request, signal} = {}) {
+  const images = references.map(({name, mimeType, data}) => ({name, mimeType, data}));
+  const post = (url, value, extra = {}) => request(url, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(value), signal, timeoutMs: 45_000, ...extra});
+  try {return await post('/api/jobs', {description, references: images});}
+  catch (error) {if (error?.status !== 413 || error?.uncertain || !images.length || signal?.aborted) throw error;}
+  const fail = code => {const error = new Error(code); error.code = code; throw error;};
+  if (images.length > MAX_REFERENCES) fail('references_invalid');
+  const metadata = images.map(image => {
+    if (typeof image.data !== 'string' || !image.data.length || image.data.length % 4 || /[^A-Za-z0-9+/=]/.test(image.data)) fail('references_invalid');
+    const bytes = image.data.length / 4 * 3 - (image.data.endsWith('==') ? 2 : image.data.endsWith('=') ? 1 : 0);
+    if (bytes > MAX_REFERENCE_BYTES) fail('reference_too_large');
+    return {name: image.name, mimeType: image.mimeType, bytes};
+  });
+  if (metadata.reduce((sum, image) => sum + image.bytes, 0) > MAX_REFERENCE_TOTAL) fail('references_too_large');
+  // A long UTF-8 description can itself exceed an upstream request limit.
+  // Keep it intact and ask for shortening; never silently lose user content.
+  if (new TextEncoder().encode(JSON.stringify({description, referenceUploadId: 'x'.repeat(36)})).length > 12 * 1024) fail('reference_description_too_large');
+  let id, jobSubmissionStarted = false;
+  try {
+    const upload = await post('/api/reference-uploads', {references: metadata});
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(upload?.id || '') || upload.chunkCharacters !== 8192) fail('reference_upload_invalid');
+    id = upload.id;
+    for (let reference = 0; reference < images.length; reference++) {
+      for (let offset = 0; offset < images[reference].data.length; offset += upload.chunkCharacters) {
+        if (signal?.aborted) throw signal.reason || new Error('request_cancelled');
+        const data = images[reference].data.slice(offset, offset + upload.chunkCharacters);
+        const result = await post(`/api/reference-uploads/${id}/chunks`, {reference, offset, data});
+        if (result?.offset !== offset + data.length) fail('reference_upload_invalid');
+      }
+    }
+    const completed = await post(`/api/reference-uploads/${id}/complete`, {});
+    if (completed?.completed !== true || completed.id !== id) fail('reference_upload_invalid');
+    jobSubmissionStarted = true;
+    return await post('/api/jobs', {description, referenceUploadId: id});
+  } catch (error) {
+    if (!jobSubmissionStarted && error?.uncertain) {
+      // A timed-out temporary image upload cannot create a task. Only the
+      // final job request can leave the submission outcome uncertain.
+      const failure = new Error(error.code || error.message);
+      failure.code = error.code || error.message; failure.status = error.status; failure.uncertain = false;
+      throw failure;
+    }
+    throw error;
+  } finally {
+    if (id) {
+      // This deletes only temporary bytes, never an accepted job. Do not block
+      // the UI on cleanup or retry a possibly accepted job to clear an error.
+      void request(`/api/reference-uploads/${id}`, {method: 'DELETE', timeoutMs: 3000}).catch(() => {});
+    }
+  }
+}

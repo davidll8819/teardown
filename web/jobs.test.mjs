@@ -6,6 +6,24 @@ import path from 'node:path';
 import {createJobStore} from './jobs.mjs';
 import {imageFixture, pngFixture} from './reference-fixtures.mjs';
 
+test('corrupt persisted metadata is reported as storage failure rather than hidden or missing', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'teardown-corrupt-'));
+  try {
+    const scope = {org: 'one', user: 'alice'};
+    const store = createJobStore({directory, generate: async () => ({html: '<p>saved</p>'})});
+    const job = await store.create(scope, '一个真实保存的任务');
+    for (let i = 0; i < 100 && (await store.get(scope, job.id)).status !== 'completed'; i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal((await store.get(scope, job.id)).status, 'completed');
+    const [scopeDirectory] = await readdir(directory);
+    await writeFile(path.join(directory, scopeDirectory, job.id, 'job.json'), '{broken');
+    await assert.rejects(store.get(scope, job.id), /storage_unavailable/);
+    await assert.rejects(store.list(scope), /storage_unavailable/);
+    await assert.rejects(store.artifact(scope, job.id), /storage_unavailable/);
+    await assert.rejects(store.get({org: 'two', user: 'alice'}, job.id), /job_not_found/);
+    assert.deepEqual(await store.list({org: 'two', user: 'alice'}), []);
+  } finally {await rm(directory, {recursive: true, force: true});}
+});
+
 test('jobs and artifacts are scoped to the requesting user and organization', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'teardown-jobs-'));
   try {

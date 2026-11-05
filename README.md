@@ -1,4 +1,8 @@
-# teardown
+# 3D simulator
+
+3D simulator is the renamed Web application based on `davidll8819/teardown`, branch `codex/4yi-marketplace` (preview base: `d7e8531504bc0739e6250f99595357457764622e`). It provides a mechanical simulation workspace with reference-image uploads and analysis. The upstream Teardown skill, examples and credits are preserved below.
+
+For 4yi deployment, use **3D simulator** as the application display name and the existing root `4yi-app.json` declaration. The local preview uses a separate loopback service and private task directory. A platform release must be built from the reviewed commit and tested through an installed organization instance. See [4yi integration notes](docs/4yi-web-integration.md) for runtime requirements and outstanding checks.
 
 A Claude Code skill that turns any machine into a 3D simulator you can take apart.
 
