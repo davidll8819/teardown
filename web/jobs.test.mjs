@@ -206,5 +206,12 @@ test('failed review retains safe feedback without exposing the underlying error'
     assert.equal(state.quality.feedback[0].feedback, '拆解后零件偏离装配轴线。');
     assert.doesNotMatch(JSON.stringify(state), /private renderer/);
     await assert.rejects(store.artifact(scope, job.id), /job_not_ready/);
+    const compileStore = createJobStore({directory, generate: async () => {throw Object.assign(new Error('agent_step_limit'), {
+      quality: {compile: 'failed', visual: 'not_run', interaction: 'not_run', reviewAttempts: 0, feedback: []},
+    });}});
+    const compilation = await compileStore.create(scope, '无法编译的模型');
+    for (let i = 0; i < 100; i++) {state = await compileStore.get(scope, compilation.id); if (state.status === 'failed') break; await new Promise(resolve => setTimeout(resolve, 5));}
+    assert.equal(state.quality.compile, 'failed');
+    assert.equal(state.quality.visual, 'not_run');
   } finally {await rm(directory, {recursive: true, force: true});}
 });

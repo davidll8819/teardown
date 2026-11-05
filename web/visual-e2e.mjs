@@ -20,13 +20,20 @@ const gateway = http.createServer(async (req, res) => {
     const chunks = []; for await (const chunk of req) chunks.push(chunk);
     const request = JSON.parse(Buffer.concat(chunks));
     let message;
-    if (request.messages[0].content.startsWith('Assess a screenshot')) {
+    if (request.messages[0].content.startsWith('Assess screenshots')) {
       const image = request.messages[1].content[1].image_url.url;
       assert.match(image, /^data:image\/jpeg;base64,/); assert.ok(image.length > 1000); visionCalls++;
       message = {role: 'assistant', content: JSON.stringify({passed: true, feedback: 'Canvas visible.'})};
     } else {
       const actions = [
-        ['write_file', {path: 'main.js', content: "const c=document.createElement('canvas'); c.width=300;c.height=200;document.querySelector('#app').appendChild(c);c.getContext('2d').fillRect(0,0,100,100);"}],
+        ['write_file', {path: 'main.js', content: `import * as THREE from 'three'; import {createMechanicalExhibit} from 'teardown-exhibit';
+const root=new THREE.Group(), cover=new THREE.Group(), rotor=new THREE.Group(); root.add(cover,rotor);
+cover.add(new THREE.Mesh(new THREE.BoxGeometry(2,2,0.2),new THREE.MeshStandardMaterial())); cover.position.z=-0.4;
+rotor.add(new THREE.Mesh(new THREE.TorusGeometry(0.5,0.1,8,16),new THREE.MeshStandardMaterial()));
+createMechanicalExhibit({container:document.getElementById('app'),title:'Mock gateway regression fixture',root,
+parts:[{id:'cover',label:'Cover',object:cover,cutaway:true,explode:[0,0,-1]},{id:'rotor',label:'Rotor',object:rotor,explode:[0,0,1]}],
+parameters:[{id:'speed',label:'Speed',value:1,min:0,max:2,step:0.1}],readouts:[{id:'angle',label:'Angle',key:'angle',unit:'rad'}],
+model:({time,parameters})=>({angle:time*parameters.speed}),update:state=>{rotor.rotation.z=state.angle;}});`}],
         ['build_simulator', {entry: 'main.js'}], ['finish', {}],
       ];
       const [name, args] = actions[codeCalls++];
@@ -48,6 +55,7 @@ try {
   let job;
   for (let i = 0; i < 120; i++) {job = await (await fetch(`${base}/api/jobs/${id}`)).json(); if (['completed', 'failed'].includes(job.status)) break; await delay(250);}
   assert.equal(job.status, 'completed'); assert.equal(visionCalls, 1); assert.equal(codeCalls, 3);
+  assert.equal(job.quality.visual, 'passed'); assert.equal(job.quality.interaction, 'passed');
   assert.equal((await fetch(`${base}/api/jobs/${id}/preview`)).status, 200);
   console.log('PASS: HTTP job -> container screenshot -> vision request -> authorized preview (mock model)');
 } finally {

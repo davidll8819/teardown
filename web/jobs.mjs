@@ -14,7 +14,7 @@ function normalizeQuality(value, visualReviewed = false) {
     feedback: item.feedback.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim().slice(0, 1000),
   })) : [];
   return {
-    compile: quality.compile === 'passed' ? 'passed' : 'not_run',
+    compile: check(quality.compile),
     visual: !value && visualReviewed === true ? 'passed' : check(quality.visual),
     interaction: check(quality.interaction),
     reviewAttempts: attempt(quality.reviewAttempts),
