@@ -104,6 +104,11 @@ parts:[{id:'ring',label:'Fixture ring',object:part,cutaway:true,explode:[0,0,2]}
 parameters:[{id:'speed',label:'Fixture speed',value:1,min:0,max:2,step:0.1}],
 readouts:[{id:'angle',label:'Fixture angle',key:'angle',unit:'rad'}],
 model:({time,parameters})=>({angle:time*parameters.speed}),update:state=>{part.rotation.z=state.angle;}});`}],
+          ['write_file', {path: 'exhibit-text.json', content: JSON.stringify({version: 1,
+            title: {'zh-CN': '部署测试模型', en: 'deployment fixture result'}, subtitle: {'zh-CN': '仅测试部署流程', en: 'Deployment fixture only'},
+            parts: {ring: {label: {'zh-CN': '测试圆环', en: 'Fixture ring'}, description: {'zh-CN': '测试部件', en: 'Fixture part'}}},
+            parameters: {speed: {label: {'zh-CN': '测试速度', en: 'Fixture speed'}, unit: {'zh-CN': '', en: ''}}},
+            readouts: {angle: {label: {'zh-CN': '测试角度', en: 'Fixture angle'}, unit: {'zh-CN': 'rad', en: 'rad'}}}, tour: []})}],
           ['build_simulator', {entry: 'main.js'}],
           ['finish', {}],
         ];
@@ -197,7 +202,7 @@ model:({time,parameters})=>({angle:time*parameters.speed}),update:state=>{part.r
     }, 'completed fixture job');
     assert.deepEqual(completed.analysis, analysis);
     assert.deepEqual(fixtureErrors, []);
-    assert.equal(gatewayRequests.length, 5, 'one image analysis plus four authoring tool turns');
+    assert.equal(gatewayRequests.length, 6, 'one image analysis plus five authoring tool turns');
     const preview = await authenticated(previewUrl);
     assert.equal(preview.status, 200);
     assert.match(preview.headers.get('content-security-policy'), /sandbox allow-scripts/);
@@ -235,7 +240,7 @@ model:({time,parameters})=>({angle:time*parameters.speed}),update:state=>{part.r
     const interrupted = await (await authenticated(`/api/jobs/${pending.id}`)).json();
     assert.equal(interrupted.status, 'failed');
     assert.equal(interrupted.error, 'interrupted');
-    assert.equal(gatewayRequests.length, 6, 'restart must not silently rerun the model');
+    assert.equal(gatewayRequests.length, 7, 'restart must not silently rerun the model');
     assert.deepEqual(fixtureErrors, []);
   } finally {
     await stop();

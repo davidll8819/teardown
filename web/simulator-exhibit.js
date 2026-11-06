@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import {createMechanicalStage} from './simulator-stage.js';
 
+const EN = Object.freeze({"装配": "Assembled", "剖切": "Cutaway", "爆炸": "Exploded", "透视": "Perspective", "正面": "Front", "侧面": "Side", "俯视": "Top", "机械交互展台": "Mechanical exhibit", "模型时间": "Model time", "控制状态": "Control", "运行": "Running", "机械研究 / 交互视图": "Mechanical study / Interactive view", "拖动旋转 · 滚轮缩放": "Drag to orbit · Scroll to zoom", "运行读数": "Live readouts", "此模型未提供数值读数。": "This model has no numeric readouts.", "模型参数": "Model parameters", "此模型没有可调参数。": "This model has no adjustable parameters.", "拆解与视角": "Views and disassembly", "重置相机": "Reset camera", "子系统": "Subsystems", "此模型未定义可拆解子系统。": "This model has no registered subsystems.", "选择一个子系统": "Select a subsystem", "点击模型部件或上方名称，查看它的作用。": "Select a part or its name to learn what it does.", "暂停运动": "Pause motion", "继续运动": "Resume motion", "巡游进度": "Tour progress", "自动巡游": "Auto tour", "恢复巡游": "Resume tour", "停止巡游": "Stop tour", "读数与部件运动使用同一模型状态": "Readouts and moving parts share one model state", "各子系统沿指定装配方向分离": "Subsystems separate along their assembly directions", "隐藏可移除外壳，观察内部机构": "Removable covers are hidden to reveal the mechanism", "此模型未标记可移除外壳": "No removable covers are registered", "完整机构 · 运动与读数同步": "Complete assembly · Motion and readouts stay in sync", "模型未提供此子系统的说明。": "No description was supplied for this subsystem.", "模型错误": "Model error", "已暂停": "Paused", "手动探索": "Manual exploration", "已尊重减少动态效果偏好": "Reduced motion preference is respected", "操作即可接管": "Interact to take control", "巡游已关闭": "Tour is off", "当前可见": "Visible", "剖切模式已移除此外壳": "This cover is removed in cutaway mode", "当前隐藏": "Hidden", "整体运转": "Working assembly", "内部机构": "Inside the mechanism", "拆解与装配": "Disassembly and assembly"});
 const MODES = Object.freeze({assembled: '装配', cutaway: '剖切', exploded: '爆炸'});
 const VIEWS = Object.freeze({perspective: [4, 2.4, 4], front: [0, 0.02, 1], side: [1, 0.02, 0], top: [0.01, 1, 0]});
 const VIEW_LABELS = {perspective: '透视', front: '正面', side: '侧面', top: '俯视'};
@@ -19,7 +20,7 @@ const CSS = `
 .td-exhibit{--paper:#f4f1eb;--surface:#faf8f3;--ink:#232522;--muted:#69675f;--line:#dfdcd4;--accent:#ee4d25;--accent-ink:#b53213;box-sizing:border-box;background:var(--paper);color:var(--ink);font:14px/1.45 Arial,"PingFang SC","Microsoft YaHei",sans-serif;width:100%;height:100%;overflow:auto;min-width:0;padding:18px;isolation:isolate}
 .td-exhibit *{box-sizing:border-box}.td-exhibit button,.td-exhibit input{font:inherit}.td-exhibit button{color:inherit;cursor:pointer}.td-exhibit button:disabled{cursor:default;color:var(--muted)}
 .td-exhibit button:focus-visible,.td-exhibit input:focus-visible,.td-exhibit canvas:focus-visible{outline:2px solid var(--accent-ink);outline-offset:3px}.td-exhibit [hidden]{display:none!important}
-.td-exhibit__header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 0 16px;border-bottom:1px solid var(--line)}
+.td-exhibit__language{max-width:110px;min-height:34px;border:1px solid var(--line);border-radius:3px;background:var(--surface);color:var(--ink);padding:5px;font:inherit}.td-exhibit__header{flex-wrap:wrap;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 0 16px;border-bottom:1px solid var(--line)}
 .td-exhibit__identity{display:flex;align-items:center;gap:16px;min-width:0}.td-exhibit__mark{color:var(--accent);flex:none;width:42px;height:42px}.td-exhibit h1{font-size:25px;font-weight:600;line-height:1.15;margin:0 0 5px;letter-spacing:-.6px;overflow-wrap:anywhere}.td-exhibit__subtitle{margin:0;color:var(--muted);font-size:12px;max-width:66ch;overflow-wrap:anywhere}
 .td-exhibit__meta{display:flex;align-items:center;gap:22px;flex:none}.td-exhibit__meta-item{display:grid;gap:3px}.td-exhibit__label{color:var(--muted);font-size:11px}.td-exhibit__num{font-family:"SFMono-Regular",Consolas,"Liberation Mono",monospace;font-variant-numeric:tabular-nums}.td-exhibit__status{font-size:12px;white-space:nowrap}.td-exhibit__status:before{content:"";display:inline-block;background:var(--accent);width:5px;height:5px;margin:0 7px 2px 0}
 .td-exhibit__grid{display:grid;grid-template-columns:216px minmax(0,1fr) 236px;gap:16px;align-items:start;padding:16px 0}.td-exhibit__rail{display:grid;gap:16px;min-width:0}.td-exhibit__panel{padding:14px;background:var(--surface);border:1px solid var(--line);border-radius:4px;min-width:0}.td-exhibit__panel h2{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600;margin:0 0 14px}.td-exhibit__panel h2:before{content:"";width:2px;height:11px;background:var(--accent);flex:none}
@@ -35,7 +36,7 @@ const CSS = `
 @media(prefers-reduced-motion:reduce){.td-exhibit *{scroll-behavior:auto!important}}
 `;
 
-function element(tag, className, text) {
+function domElement(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
@@ -62,6 +63,25 @@ function numericPath(state, key) {
   return finite(value) ? value : null;
 }
 
+function applyExhibitText(options) {
+  const text = window.__TEARDOWN_EXHIBIT_TEXT__;
+  if (!text) return options; // Historical authored documents retain their own text.
+  const map = name => {
+    const items = options[name] ?? [];
+    const table = text[name];
+    if (!Array.isArray(items) || items.length !== Object.keys(table).length || items.some(item => !item || !Object.hasOwn(table, item.id))) {
+      throw new TypeError(`exhibit_text_mapping_invalid:${name}`);
+    }
+    return items.map(item => ({...item, ...table[item.id]}));
+  };
+  const result = {...options, title: text.title, subtitle: text.subtitle, parts: map('parts'), parameters: map('parameters'), readouts: map('readouts')};
+  if (options.tour !== undefined) {
+    if (!Array.isArray(options.tour) || options.tour.length !== text.tour.length) throw new TypeError('exhibit_text_mapping_invalid:tour');
+    result.tour = options.tour.map((step, index) => ({...step, label: text.tour[index]}));
+  } else if (text.tour.length) throw new TypeError('exhibit_text_mapping_invalid:tour');
+  return result;
+}
+
 /**
  * Owns controls/stage, not the caller's mesh/material resources. Call dispose()
  * before disposing caller resources. Explode vectors use each object's ORIGINAL
@@ -69,7 +89,22 @@ function numericPath(state, key) {
  * removable shells cutaway:true. Readouts are numeric state paths; absent is null.
  */
 export function createMechanicalExhibit(options = {}) {
+  options = applyExhibitText(options);
   const {container, root, model, update} = options;
+  let locale = document.documentElement.lang === 'en' ? 'en' : 'zh-CN';
+  const bindings = [];
+  const tr = (value, fallback = '') => {
+    if (value && typeof value === 'object') return String(value[locale] ?? value['zh-CN'] ?? value.en ?? fallback);
+    const text = String(value ?? fallback);
+    return locale === 'en' ? EN[text] ?? text : text;
+  };
+  const element = (tag, className, text) => {
+    const node = domElement(tag, className, text === undefined ? undefined : tr(text));
+    if (text !== undefined) bindings.push([node, text]);
+    return node;
+  };
+  const number = value => Number(value).toLocaleString(locale, {maximumFractionDigits: 6});
+
   if (!container?.appendChild) throw new TypeError('exhibit_container_required');
   if (!root?.isObject3D) throw new TypeError('exhibit_root_required');
   if (typeof model !== 'function' || typeof update !== 'function') throw new TypeError('exhibit_model_and_update_required');
@@ -80,17 +115,17 @@ export function createMechanicalExhibit(options = {}) {
     partObjects.add(part.object);
     const vector = part.explode ?? [0, 0, 0];
     if (!Array.isArray(vector) || vector.length !== 3 || !vector.every(finite)) throw new TypeError(`exhibit_explode_invalid:${part.id}`);
-    return {...part, label: String(part.label ?? part.id), description: String(part.description ?? ''), explode: [...vector], cutaway: part.cutaway === true, shown: true};
+    return {...part, label: part.label ?? part.id, description: part.description ?? '', explode: [...vector], cutaway: part.cutaway === true, shown: true};
   });
   const parameterDefs = indexed(options.parameters ?? [], 'parameters').map(parameter => {
     if (![parameter.value, parameter.min, parameter.max].every(finite) || parameter.max <= parameter.min || !finite(parameter.max - parameter.min) || (parameter.step !== undefined && (!finite(parameter.step) || parameter.step <= 0))) throw new TypeError(`exhibit_parameter_invalid:${parameter.id}`);
-    return {...parameter, step: parameter.step ?? (parameter.max - parameter.min) / 100, label: String(parameter.label ?? parameter.id), unit: String(parameter.unit ?? '')};
+    return {...parameter, step: parameter.step ?? (parameter.max - parameter.min) / 100, label: parameter.label ?? parameter.id, unit: parameter.unit ?? ''};
   });
-  const readoutDefs = indexed(options.readouts ?? [], 'readouts').map(readout => ({...readout, label: String(readout.label ?? readout.id), unit: String(readout.unit ?? ''), digits: clamp(Math.round(finite(readout.digits) ? readout.digits : 1), 0, 6)}));
+  const readoutDefs = indexed(options.readouts ?? [], 'readouts').map(readout => ({...readout, label: readout.label ?? readout.id, unit: readout.unit ?? '', digits: clamp(Math.round(finite(readout.digits) ? readout.digits : 1), 0, 6)}));
   const defaultTour = [{label: '整体运转', duration: 8, mode: 'assembled', view: 'perspective'}, {label: '内部机构', duration: 8, mode: 'cutaway', view: 'side'}, {label: '拆解与装配', duration: 8, mode: 'exploded', view: 'perspective'}];
   const tourSteps = (options.tour ?? defaultTour).map(step => {
     if (!finite(step.duration) || step.duration <= 0 || step.duration > 3600 || !Object.hasOwn(MODES, step.mode ?? 'assembled') || !Object.hasOwn(VIEWS, step.view ?? 'perspective')) throw new TypeError('exhibit_tour_step_invalid');
-    return {...step, label: String(step.label ?? MODES[step.mode ?? 'assembled']), mode: step.mode ?? 'assembled', view: step.view ?? 'perspective'};
+    return {...step, label: step.label ?? MODES[step.mode ?? 'assembled'], mode: step.mode ?? 'assembled', view: step.view ?? 'perspective'};
   });
   const tourDuration = tourSteps.reduce((sum, step) => sum + step.duration, 0);
   const media = window.matchMedia?.('(prefers-reduced-motion: reduce)');
@@ -106,7 +141,7 @@ export function createMechanicalExhibit(options = {}) {
   const rootParent = root.parent;
   const rootIndex = rootParent?.children.indexOf(root) ?? -1;
   const shell = element('section', 'td-exhibit');
-  shell.setAttribute('aria-label', String(options.title ?? '机械交互展台'));
+  shell.setAttribute('aria-label', tr(options.title ?? '机械交互展台'));
   const style = element('style'); style.textContent = CSS; shell.append(style);
   const listen = (node, name, handler, config) => {node.addEventListener(name, handler, config); cleanups.push(() => node.removeEventListener(name, handler, config));};
   const interact = () => {if (disposed) return; lastInteraction = now(); const changed = !tourHeld; tourHeld = true; if (changed) refreshControls();};
@@ -123,7 +158,7 @@ export function createMechanicalExhibit(options = {}) {
   const mark = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   mark.setAttribute('viewBox', '0 0 48 48'); mark.setAttribute('class', 'td-exhibit__mark'); mark.setAttribute('aria-hidden', 'true');
   mark.innerHTML = '<g fill="none" stroke="currentColor" stroke-width="1.4"><path d="M24 3 42 14v20L24 45 6 34V14Z M24 3v14m0 14v14M6 14l12 7m12 6 12 7M6 34l12-7m12-6 12-7"/><circle cx="24" cy="24" r="8"/><circle cx="24" cy="24" r="3"/></g>';
-  const identityText = element('div'); identityText.append(element('h1', '', String(options.title ?? '机械交互展台')), element('p', 'td-exhibit__subtitle', String(options.subtitle ?? '')));
+  const identityText = element('div'); identityText.append(element('h1', '', options.title ?? '机械交互展台'), element('p', 'td-exhibit__subtitle', options.subtitle ?? ''));
   identity.append(mark, identityText);
   const meta = element('div', 'td-exhibit__meta');
   const runtimeMeta = element('div', 'td-exhibit__meta-item'); const runtimeValue = element('span', 'td-exhibit__num', '00:00'); runtimeMeta.append(element('span', 'td-exhibit__label', '模型时间'), runtimeValue);
@@ -140,6 +175,7 @@ export function createMechanicalExhibit(options = {}) {
   try {stage = createMechanicalStage({container: viewport, background: '#f4f1eb', onInteract: interact});}
   catch (cause) {shell.remove(); throw cause;}
   stage.canvas.tabIndex = 0;
+  stage.canvas.setAttribute('aria-label', locale === 'en' ? '3D model: drag to orbit, scroll or pinch to zoom' : '3D 模型，可拖动旋转、滚轮或双指缩放');
   stage.scene.add(root);
 
   // Wrap, never animate the model's own transform. This works for nested parts too.
@@ -161,12 +197,12 @@ export function createMechanicalExhibit(options = {}) {
     const row = element('div', 'td-exhibit__readout'); row.append(element('div', 'td-exhibit__readout-name', def.label));
     const reading = element('div', 'td-exhibit__reading'); const value = element('output', 'td-exhibit__value td-exhibit__num', '—'); value.dataset.exhibitReadout = def.id;
     reading.append(value, element('span', 'td-exhibit__unit', def.unit)); row.append(reading);
-    let gauge = null;
+    let gauge = null, limits = null;
     if (finite(def.min) && finite(def.max) && def.max > def.min) {
       const track = element('div', 'td-exhibit__gauge'); gauge = element('span', 'td-exhibit__gauge-fill'); track.append(gauge); track.setAttribute('aria-hidden', 'true');
-      const limits = element('div', 'td-exhibit__limits td-exhibit__num'); limits.append(element('span', '', String(def.min)), element('span', '', `${def.max} ${def.unit}`)); row.append(track, limits);
+      limits = element('div', 'td-exhibit__limits td-exhibit__num'); limits.append(domElement('span', '', number(def.min)), domElement('span', '', `${number(def.max)} ${tr(def.unit)}`)); row.append(track, limits);
     }
-    readoutNodes.set(def.id, {value, gauge}); readoutList.append(row);
+    readoutNodes.set(def.id, {value, gauge, limits}); readoutList.append(row);
   }
   if (!readoutDefs.length) readoutList.append(element('p', 'td-exhibit__note', '此模型未提供数值读数。'));
   left.append(readoutPanel);
@@ -175,11 +211,11 @@ export function createMechanicalExhibit(options = {}) {
   const normalizeParameter = (def, value) => clamp(Number((def.min + Math.round((clamp(value, def.min, def.max) - def.min) / def.step) * def.step).toPrecision(12)), def.min, def.max);
   for (const def of parameterDefs) {
     parameters[def.id] = normalizeParameter(def, def.value);
-    const row = element('div', 'td-exhibit__parameter'); const label = element('label', '', def.label);
-    const output = element('output', 'td-exhibit__num'); const input = element('input'); input.type = 'range'; input.min = def.min; input.max = def.max; input.step = def.step; input.value = parameters[def.id]; input.dataset.exhibitParameter = def.id; input.setAttribute('aria-label', def.label);
+    const row = element('div', 'td-exhibit__parameter'); const label = domElement('label');
+    const output = element('output', 'td-exhibit__num'); const input = element('input'); input.type = 'range'; input.min = def.min; input.max = def.max; input.step = def.step; input.value = parameters[def.id]; input.dataset.exhibitParameter = def.id; input.setAttribute('aria-label', tr(def.label));
     label.append(input); // Explicit nested label associates without global ID collisions.
     row.append(element('span', '', def.label), output, label); label.style.gridColumn = '1 / -1'; label.replaceChildren(input);
-    output.textContent = `${parameters[def.id]} ${def.unit}`.trim();
+    output.textContent = `${number(parameters[def.id])} ${tr(def.unit)}`.trim();
     listen(input, 'input', () => {interact(); changeParameter(def.id, Number(input.value));});
     parameterNodes.set(def.id, {input, output}); parameterPanel.append(row);
   }
@@ -196,7 +232,7 @@ export function createMechanicalExhibit(options = {}) {
   const partNodes = new Map();
   for (const part of parts) {
     const row = element('div', 'td-exhibit__part'); const select = button(part.label, null, () => changeSelection(part.id), 'td-exhibit__part-select'); select.className = 'td-exhibit__part-select'; select.dataset.exhibitSelectPart = part.id; select.setAttribute('aria-pressed', 'false');
-    const toggle = element('input', 'td-exhibit__part-toggle'); toggle.type = 'checkbox'; toggle.checked = true; toggle.dataset.exhibitPart = part.id; toggle.setAttribute('aria-label', `显示${part.label}`);
+    const toggle = element('input', 'td-exhibit__part-toggle'); toggle.type = 'checkbox'; toggle.checked = true; toggle.dataset.exhibitPart = part.id; toggle.setAttribute('aria-label', `${locale === 'en' ? 'Show ' : '显示'}${tr(part.label)}`);
     listen(toggle, 'change', () => {interact(); part.shown = toggle.checked; applyPartMode(); paint();}); row.append(select, toggle); partList.append(row); partNodes.set(part.id, {select, toggle});
   }
   if (!parts.length) partList.append(element('p', 'td-exhibit__note', '此模型未定义可拆解子系统。'));
@@ -209,7 +245,7 @@ export function createMechanicalExhibit(options = {}) {
   const timelineBlock = element('div'); const timelineHead = element('div', 'td-exhibit__timeline-head'); const tourLabel = element('span', 'td-exhibit__tour-label'); const tourClock = element('span', 'td-exhibit__num'); timelineHead.append(tourLabel, tourClock);
   const timeline = element('div', 'td-exhibit__timeline'); const scrubber = element('input'); scrubber.type = 'range'; scrubber.min = '0'; scrubber.max = String(tourDuration || 1); scrubber.step = '0.01'; scrubber.value = '0'; scrubber.disabled = !tourDuration; scrubber.dataset.exhibitAction = 'timeline'; scrubber.setAttribute('aria-label', '巡游进度');
   listen(scrubber, 'input', () => {interact(); tourPosition = clamp(Number(scrubber.value), 0, tourDuration); applyTourStep(true); paint();}); timeline.append(scrubber);
-  const chapterRow = element('div', 'td-exhibit__tour-chapters'); const chapterNodes = tourSteps.map(step => {const node = element('span', 'td-exhibit__chapter', step.label); node.style.flex = `${step.duration} 1 0`; node.title = step.label; chapterRow.append(node); return node;});
+  const chapterRow = element('div', 'td-exhibit__tour-chapters'); const chapterNodes = tourSteps.map(step => {const node = element('span', 'td-exhibit__chapter', step.label); node.style.flex = `${step.duration} 1 0`; node.title = tr(step.label); chapterRow.append(node); return node;});
   timelineBlock.append(timelineHead, timeline, chapterRow);
   const tourControls = element('div', 'td-exhibit__tour-controls'); const tourButton = button('自动巡游', 'tour', () => changeTour(!tourEnabled || tourHeld)); const idleText = element('span', 'td-exhibit__idle'); tourControls.append(tourButton, idleText); transport.append(pauseButton, timelineBlock, tourControls); shell.append(transport);
   const footer = element('div', 'td-exhibit__footer'); footer.append(element('span', '', '读数与部件运动使用同一模型状态'), element('span', '', 'TEARDOWN / MECHANICAL EXHIBIT')); shell.append(footer);
@@ -240,7 +276,7 @@ export function createMechanicalExhibit(options = {}) {
     if (!def || !finite(value)) throw new TypeError('exhibit_parameter_unknown_or_invalid');
     // Quantize relative to min, then cap; avoids slider/model disagreement.
     parameters[id] = normalizeParameter(def, value);
-    const nodes = parameterNodes.get(id); nodes.input.value = parameters[id]; nodes.output.textContent = `${parameters[id]} ${def.unit}`.trim();
+    const nodes = parameterNodes.get(id); nodes.input.value = parameters[id]; nodes.output.textContent = `${number(parameters[id])} ${tr(def.unit)}`.trim();
     evaluate(); paint();
   }
   function changePaused(next) {paused = !!next; previousFrame = now(); if (!paused && error) evaluate(); refreshControls(); paint();}
@@ -268,7 +304,7 @@ export function createMechanicalExhibit(options = {}) {
       readoutValues = Object.create(null);
       for (const def of readoutDefs) {
         const value = numericPath(state, def.key); readoutValues[def.id] = value;
-        const nodes = readoutNodes.get(def.id); nodes.value.textContent = value === null ? '—' : value.toLocaleString('en-US', {minimumFractionDigits: def.digits, maximumFractionDigits: def.digits});
+        const nodes = readoutNodes.get(def.id); nodes.value.textContent = value === null ? '—' : value.toLocaleString(locale, {minimumFractionDigits: def.digits, maximumFractionDigits: def.digits});
         nodes.value.dataset.value = value === null ? '' : String(value);
         if (nodes.gauge) nodes.gauge.style.width = value === null ? '0%' : `${clamp((value - def.min) / (def.max - def.min), 0, 1) * 100}%`;
       }
@@ -277,46 +313,67 @@ export function createMechanicalExhibit(options = {}) {
       applyPartMode(); return true;
     } catch (cause) {
       error = String(cause?.message ?? cause).slice(0, 240); paused = true;
-      errorNode.textContent = `模型更新停止：${error}。下方保留最后一次有效读数。`; errorNode.hidden = false; refreshControls(); return false;
+      errorNode.textContent = locale === 'en' ? `Model update stopped: ${error}. Last valid readings are retained.` : `模型更新停止：${error}。下方保留最后一次有效读数。`; errorNode.hidden = false; refreshControls(); return false;
     }
   }
   function refreshControls() {
     for (const [key, node] of modeButtons) node.setAttribute('aria-pressed', String(key === mode));
     for (const [key, node] of viewButtons) node.setAttribute('aria-pressed', String(key === view));
-    modeName.textContent = MODES[mode];
-    modeDescription.textContent = mode === 'exploded' ? '各子系统沿指定装配方向分离' : mode === 'cutaway' ? (parts.some(part => part.cutaway) ? '隐藏可移除外壳，观察内部机构' : '此模型未标记可移除外壳') : '完整机构 · 运动与读数同步';
-    pauseButton.textContent = paused ? '▶' : 'Ⅱ'; pauseButton.setAttribute('aria-label', paused ? '继续运动' : '暂停运动'); pauseButton.setAttribute('aria-pressed', String(paused));
+    modeName.textContent = tr(MODES[mode]);
+    modeDescription.textContent = tr(mode === 'exploded' ? '各子系统沿指定装配方向分离' : mode === 'cutaway' ? (parts.some(part => part.cutaway) ? '隐藏可移除外壳，观察内部机构' : '此模型未标记可移除外壳') : '完整机构 · 运动与读数同步');
+    pauseButton.textContent = paused ? '▶' : 'Ⅱ'; pauseButton.setAttribute('aria-label', tr(paused ? '继续运动' : '暂停运动')); pauseButton.setAttribute('aria-pressed', String(paused));
     tourButton.setAttribute('aria-pressed', String(tourEnabled && !tourHeld)); tourButton.disabled = !tourDuration;
-    tourButton.textContent = tourHeld && tourEnabled ? '恢复巡游' : tourEnabled ? '停止巡游' : '自动巡游';
+    tourButton.textContent = tr(tourHeld && tourEnabled ? '恢复巡游' : tourEnabled ? '停止巡游' : '自动巡游');
     for (const part of parts) {const nodes = partNodes.get(part.id); nodes.select.setAttribute('aria-pressed', String(selectedId === part.id)); nodes.toggle.checked = part.shown;}
     const selected = partById.get(selectedId);
-    selectionTitle.textContent = selected?.label ?? '选择一个子系统';
-    selectionDescription.textContent = selected ? selected.description || '模型未提供此子系统的说明。' : '点击模型部件或上方名称，查看它的作用。';
+    selectionTitle.textContent = tr(selected?.label ?? '选择一个子系统');
+    selectionDescription.textContent = tr(selected ? selected.description || '模型未提供此子系统的说明。' : '点击模型部件或上方名称，查看它的作用。');
   }
   function paint() {
     if (disposed) return;
     runtimeValue.textContent = clock(time);
-    statusValue.textContent = error ? '模型错误' : paused ? '已暂停' : tourEnabled && !tourHeld ? '自动巡游' : '手动探索';
+    statusValue.textContent = tr(error ? '模型错误' : paused ? '已暂停' : tourEnabled && !tourHeld ? '自动巡游' : '手动探索');
     const index = currentTourIndex();
-    tourLabel.textContent = tourSteps[index]?.label ?? '手动探索'; tourClock.textContent = `${clock(tourPosition)} / ${clock(tourDuration)}`;
+    tourLabel.textContent = tr(tourSteps[index]?.label ?? '手动探索'); tourClock.textContent = `${clock(tourPosition)} / ${clock(tourDuration)}`;
     scrubber.value = String(tourPosition); chapterNodes.forEach((node, i) => node.setAttribute('aria-current', String(index === i)));
-    idleText.textContent = tourEnabled && tourHeld && !paused ? `${Math.max(0, Math.ceil((IDLE_MS - (now() - lastInteraction)) / 1000))} 秒后恢复巡游` : reducedMotion && !tourEnabled ? '已尊重减少动态效果偏好' : tourEnabled ? '操作即可接管' : '巡游已关闭';
+    idleText.textContent = tourEnabled && tourHeld && !paused ? (locale === 'en' ? `Tour resumes in ${Math.max(0, Math.ceil((IDLE_MS - (now() - lastInteraction)) / 1000))} s` : `${Math.max(0, Math.ceil((IDLE_MS - (now() - lastInteraction)) / 1000))} 秒后恢复巡游`) : tr(reducedMotion && !tourEnabled ? '已尊重减少动态效果偏好' : tourEnabled ? '操作即可接管' : '巡游已关闭');
     const part = partById.get(selectedId);
     selectionBox.visible = !!part && effectiveVisible(part.object);
     selectionTag.hidden = !selectionBox.visible;
-    if (part) selectionState.textContent = effectiveVisible(part.object) ? '当前可见' : mode === 'cutaway' && part.cutaway ? '剖切模式已移除此外壳' : '当前隐藏'; else selectionState.textContent = '';
+    if (part) selectionState.textContent = tr(effectiveVisible(part.object) ? '当前可见' : mode === 'cutaway' && part.cutaway ? '剖切模式已移除此外壳' : '当前隐藏'); else selectionState.textContent = '';
     root.updateWorldMatrix(true, true);
     if (selectionBox.visible) {
       selectionBox.box.setFromObject(part.object);
       if (selectionBox.box.isEmpty()) {selectionBox.visible = false; selectionTag.hidden = true;}
       else {
         const point = stage.project(selectionBox.box.getCenter(new THREE.Vector3()));
-        selectionTag.hidden = !point.visible; selectionTag.textContent = part.label;
+        selectionTag.hidden = !point.visible; selectionTag.textContent = tr(part.label);
         selectionTag.style.left = `${clamp(point.x, 90, Math.max(90, viewport.clientWidth - 90))}px`; selectionTag.style.top = `${clamp(point.y, 45, viewport.clientHeight - 35)}px`;
       }
     }
     stage.render();
   }
+
+  const language = domElement('select', 'td-exhibit__language');
+  for (const [value, label] of [['zh-CN', '中文'], ['en', 'English']]) {const option = domElement('option', '', label); option.value = value; language.append(option);}
+  language.value = locale; header.append(language);
+  function setLocale(next) {
+    if (!['zh-CN', 'en'].includes(next)) throw new TypeError('exhibit_locale_invalid');
+    locale = next; document.documentElement.lang = next; language.value = next;
+    for (const [node, text] of bindings) node.textContent = tr(text);
+    shell.setAttribute('aria-label', tr(options.title ?? '机械交互展台'));
+    stage.canvas.setAttribute('aria-label', locale === 'en' ? '3D model: drag to orbit, scroll or pinch to zoom' : '3D 模型，可拖动旋转、滚轮或双指缩放');
+    language.setAttribute('aria-label', locale === 'en' ? 'Model language' : '模型语言');
+    scrubber.setAttribute('aria-label', tr('巡游进度'));
+    for (const def of parameterDefs) {const nodes = parameterNodes.get(def.id); nodes.input.setAttribute('aria-label', tr(def.label)); nodes.output.textContent = `${number(parameters[def.id])} ${tr(def.unit)}`.trim();}
+    for (const def of readoutDefs) {const nodes = readoutNodes.get(def.id); if (nodes.limits) {nodes.limits.firstChild.textContent = number(def.min); nodes.limits.lastChild.textContent = `${number(def.max)} ${tr(def.unit)}`;} const value = readoutValues[def.id]; nodes.value.textContent = value == null ? '—' : value.toLocaleString(locale, {minimumFractionDigits: def.digits, maximumFractionDigits: def.digits});}
+    for (const part of parts) partNodes.get(part.id).toggle.setAttribute('aria-label', `${locale === 'en' ? 'Show ' : '显示'}${tr(part.label)}`);
+    chapterNodes.forEach((node, i) => {node.title = tr(tourSteps[i].label);});
+    if (error) errorNode.textContent = locale === 'en' ? `Model update stopped: ${error}. Last valid readings are retained.` : `模型更新停止：${error}。下方保留最后一次有效读数。`;
+    refreshControls(); paint();
+  }
+  listen(language, 'change', () => {setLocale(language.value); window.dispatchEvent(new CustomEvent('teardown:locale', {detail: locale}));});
+  listen(window, 'teardown:locale', event => {if (['zh-CN', 'en'].includes(event.detail) && event.detail !== locale) setLocale(event.detail);});
 
   const raycaster = new THREE.Raycaster(); const pointer = new THREE.Vector2();
   let clickStart = null; const activePointers = new Set();
@@ -369,8 +426,8 @@ export function createMechanicalExhibit(options = {}) {
   }
 
   function snapshot() {
-    return {time, paused, mode, view, selectedPart: selectedId, reducedMotion, error, disposed,
-      tour: {enabled: tourEnabled, active: tourEnabled && !tourHeld && !paused && !disposed, position: tourPosition, duration: tourDuration, label: tourSteps[currentTourIndex()]?.label ?? null},
+    return {locale, time, paused, mode, view, selectedPart: selectedId, reducedMotion, error, disposed,
+      tour: {enabled: tourEnabled, active: tourEnabled && !tourHeld && !paused && !disposed, position: tourPosition, duration: tourDuration, label: tr(tourSteps[currentTourIndex()]?.label ?? '') || null},
       parameters: {...parameters}, readouts: {...readoutValues},
       parts: parts.map(part => ({id: part.id, visible: effectiveVisible(part.object), enabled: part.shown, cutaway: part.cutaway, offset: part.wrapper.position.toArray()}))};
   }
@@ -389,6 +446,7 @@ export function createMechanicalExhibit(options = {}) {
     if (window.__TEARDOWN_EXHIBIT__ === api) {if (previousHook) Object.defineProperty(window, '__TEARDOWN_EXHIBIT__', previousHook); else delete window.__TEARDOWN_EXHIBIT__;}
   }
   const api = Object.freeze({
+    setLocale(next) {ensureLive(); setLocale(next); return snapshot();},
     setMode(next) {ensureLive(); interact(); changeMode(next); return snapshot();},
     setTime(next) {ensureLive(); if (!finite(next) || next < 0) throw new TypeError('exhibit_time_invalid'); interact(); time = next; evaluate(); paint(); return snapshot();},
     setParameter(id, value) {ensureLive(); interact(); changeParameter(id, value); return snapshot();},
@@ -399,7 +457,7 @@ export function createMechanicalExhibit(options = {}) {
   });
   // A frozen diagnostic interface, not an execution sandbox or physics certificate.
   if (!previousHook || previousHook.configurable) Object.defineProperty(window, '__TEARDOWN_EXHIBIT__', {configurable: true, enumerable: false, writable: false, value: api});
-  evaluate(); applyPartMode(); if (tourEnabled) applyTourStep(true); else fit(); refreshControls(); paint();
+  evaluate(); applyPartMode(); if (tourEnabled) applyTourStep(true); else fit(); refreshControls(); paint(); setLocale(locale);
   raf = requestAnimationFrame(frame);
   return api;
 }

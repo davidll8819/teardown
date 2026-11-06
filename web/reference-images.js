@@ -64,7 +64,7 @@ export async function prepareReference(file) {
     canvas.width = canvas.height = 1;
     if (!blob || blob.size > MAX_REFERENCE_BYTES) throw new Error('压缩后图片仍超过 2 MB，请裁小后重试。');
     const data = await blobBase64(blob);
-    const name = `${(file.name || '参考图片').replace(/\.[^.]+$/, '').slice(0, 100)}.jpg`;
+    const name = `${(file.name || 'reference-image').replace(/\.[^.]+$/, '').slice(0, 100)}.jpg`;
     return {id: crypto.randomUUID(), name, mimeType: 'image/jpeg', data, bytes: blob.size, url: URL.createObjectURL(blob)};
   } catch (error) {
     if (error instanceof DOMException) throw new Error('这张图片无法打开，请重新保存后上传。');
@@ -92,10 +92,10 @@ export async function restoreReferences(job) {
 // Keep the ordinary upload protocol for compatible installations. Only an
 // explicit 413 proves that the inline job was rejected and permits fallback.
 // Network failures/timeouts are never retried: their submission is uncertain.
-export async function createJobWithReferences(description, references, {request, signal} = {}) {
+export async function createJobWithReferences(description, references, {request, signal, locale = 'zh-CN'} = {}) {
   const images = references.map(({name, mimeType, data}) => ({name, mimeType, data}));
   const post = (url, value, extra = {}) => request(url, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(value), signal, timeoutMs: 45_000, ...extra});
-  try {return await post('/api/jobs', {description, references: images});}
+  try {return await post('/api/jobs', {description, references: images, locale});}
   catch (error) {if (error?.status !== 413 || error?.uncertain || !images.length || signal?.aborted) throw error;}
   const fail = code => {const error = new Error(code); error.code = code; throw error;};
   if (images.length > MAX_REFERENCES) fail('references_invalid');
@@ -108,7 +108,7 @@ export async function createJobWithReferences(description, references, {request,
   if (metadata.reduce((sum, image) => sum + image.bytes, 0) > MAX_REFERENCE_TOTAL) fail('references_too_large');
   // A long UTF-8 description can itself exceed an upstream request limit.
   // Keep it intact and ask for shortening; never silently lose user content.
-  if (new TextEncoder().encode(JSON.stringify({description, referenceUploadId: 'x'.repeat(36)})).length > 12 * 1024) fail('reference_description_too_large');
+  if (new TextEncoder().encode(JSON.stringify({description, referenceUploadId: 'x'.repeat(36), locale})).length > 12 * 1024) fail('reference_description_too_large');
   let id, jobSubmissionStarted = false;
   try {
     const upload = await post('/api/reference-uploads', {references: metadata});
@@ -125,7 +125,7 @@ export async function createJobWithReferences(description, references, {request,
     const completed = await post(`/api/reference-uploads/${id}/complete`, {});
     if (completed?.completed !== true || completed.id !== id) fail('reference_upload_invalid');
     jobSubmissionStarted = true;
-    return await post('/api/jobs', {description, referenceUploadId: id});
+    return await post('/api/jobs', {description, referenceUploadId: id, locale});
   } catch (error) {
     if (!jobSubmissionStarted && error?.uncertain) {
       // A timed-out temporary image upload cannot create a task. Only the

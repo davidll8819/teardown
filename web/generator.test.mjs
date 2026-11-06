@@ -26,6 +26,20 @@ update:state=>{pivot.rotation.z=state.angle;},
 tour:[{label:'Assembly',duration:6,mode:'assembled',view:'perspective'},{label:'Axial detail',duration:5,mode:'exploded',view:'front'}]});`;
 }
 
+const pair = (en, zh = en) => ({'zh-CN': zh, en});
+const fixtureTexts = {version:1, title:pair('Crank mechanism', '曲柄机构'), subtitle:pair('Schematic dimensions', '示意尺寸'),
+  parts:{crank:{label:pair('Crank','曲柄'),description:pair('Rotating around its bore','围绕轴孔转动')},cover:{label:pair('Shell','外壳'),description:pair('Removable surrounding shell','可拆外壳')}},
+  parameters:{rpm:{label:pair('Speed','转速'),unit:pair('rpm')}}, readouts:{phase:{label:pair('Phase','相位'),unit:pair('°')}}, tour:[pair('Assembly','装配'),pair('Axial detail','轴向细节')]};
+// Mock authoring fixtures supply the same explicit inert file required of real models.
+function withFixtureText(message) {
+  const calls = [...message.tool_calls];
+  for (const call of message.tool_calls) {
+    let input; try {input = JSON.parse(call.function.arguments);} catch {continue;}
+    if (call.function.name === 'write_file' && input.path === 'main.js' && input.content.includes('createMechanicalExhibit')) calls.push({id:call.id+'-text',type:'function',function:{name:'write_file',arguments:JSON.stringify({path:'exhibit-text.json',content:JSON.stringify(fixtureTexts)})}});
+  }
+  return {...message,tool_calls:calls};
+}
+
 test('bundles three and denies server and arbitrary path imports', async () => {
   const bundle = await compileSimulator("import {Scene} from 'three'; window.scene = new Scene();");
   assert.match(bundle, /scene/);
@@ -64,13 +78,13 @@ test('creates a multi-file project, repairs a build, and produces a sandboxed pr
     }
     if (attempts) assert.equal(messages.at(-1).role, 'tool');
     const [name, args] = plan[attempts++];
-    return {role: 'assistant', tool_calls: [{id: `call-${attempts}`, type: 'function', function: {name, arguments: JSON.stringify(args)}}]};
+    return withFixtureText({role: 'assistant', tool_calls: [{id: `call-${attempts}`, type: 'function', function: {name, arguments: JSON.stringify(args)}}]});
   }};
   const output = await generateSimulator({gateway, description: 'A simple crank mechanism'});
   assert.equal(attempts, 5);
-  assert.deepEqual(output.files, ['main.js', 'part.js']);
+  assert.deepEqual(output.files, ['exhibit-text.json', 'main.js', 'part.js']);
   assert.equal(output.sources['part.js'], "export const value='OK';");
-  assert.equal(Object.keys(output.sources).length, 2);
+  assert.equal(Object.keys(output.sources).length, 3);
   assert.match(output.html, /connect-src 'none'/);
   assert.deepEqual(output.quality, {compile: 'passed', visual: 'not_run', interaction: 'not_run', reviewAttempts: 0, feedback: []});
   assert.match(makeSimulatorHtml('</script>'), /<\\\/script>/);
@@ -82,7 +96,7 @@ test('repairs truncated tool arguments with a valid follow-up message', async ()
     attempts++;
     if (attempts === 2) assert.equal(messages.at(-2).tool_calls[0].function.arguments, '{}');
     const action = attempts === 1 ? ['write_file', '{"path":'] : attempts === 2 ? ['write_file', JSON.stringify({path: 'main.js', content: exhibitSource()})] : attempts === 3 ? ['build_simulator', JSON.stringify({entry: 'main.js'})] : ['finish', '{}'];
-    return {role: 'assistant', tool_calls: [{id: 'c', type: 'function', function: {name: action[0], arguments: action[1]}}]};
+    return withFixtureText({role: 'assistant', tool_calls: [{id: 'c', type: 'function', function: {name: action[0], arguments: action[1]}}]});
   }};
   const output = await generateSimulator({gateway, description: 'A simple crank mechanism'});
   assert.equal(attempts, 4);
@@ -102,7 +116,7 @@ test('a canvas-only authoring result cannot finish until it includes the full ex
     if (attempts === 3) assert.match(messages.at(-1).content, /build_required/);
     if (attempts === 5) assert.equal(JSON.parse(messages.at(-1).content).exhibitRuntime, 'included');
     const [name, args] = plan[attempts++];
-    return {role: 'assistant', tool_calls: [{id: `required-${attempts}`, type: 'function', function: {name, arguments: JSON.stringify(args)}}]};
+    return withFixtureText({role: 'assistant', tool_calls: [{id: `required-${attempts}`, type: 'function', function: {name, arguments: JSON.stringify(args)}}]});
   }};
   const result = await generateSimulator({gateway, description: 'A crank mechanism'});
   assert.equal(attempts, 6);
@@ -138,7 +152,7 @@ test('agent repairs a failed visual review before completing', async () => {
   const gateway = {complete: async ({messages}) => {
     if (attempts === 3) assert.match(messages.at(-1).content, /visual_review_failed/);
     const [name, args] = plan[attempts++];
-    return {role: 'assistant', tool_calls: [{id: `call-${attempts}`, type: 'function', function: {name, arguments: JSON.stringify(args)}}]};
+    return withFixtureText({role: 'assistant', tool_calls: [{id: `call-${attempts}`, type: 'function', function: {name, arguments: JSON.stringify(args)}}]});
   }};
   const output = await generateSimulator({gateway, description: 'A simple crank mechanism', visualReview: async ({references}) => {
     assert.deepEqual(references, []);
@@ -159,7 +173,7 @@ for (const review of [
     const gateway = {complete: async () => {
       const [name, input] = calls === 0 ? ['write_file', {path: 'main.js', content: exhibitSource()}] : calls === 1 ? ['build_simulator', {entry: 'main.js'}] : ['finish', {}];
       calls++;
-      return {role: 'assistant', tool_calls: [{id: `review-${calls}`, type: 'function', function: {name, arguments: JSON.stringify(input)}}]};
+      return withFixtureText({role: 'assistant', tool_calls: [{id: `review-${calls}`, type: 'function', function: {name, arguments: JSON.stringify(input)}}]});
     }};
     await assert.rejects(generateSimulator({gateway, description: 'A crank mechanism', visualReview: async () => review}), error => {
       assert.equal(error.message, 'visual_review_limit');
@@ -197,7 +211,7 @@ test('reference images are analyzed and sent to the authoring model with uncerta
       ['finish', {}],
     ][call - 2];
     if (call === 3) assert.match(messages.at(-1).content, /createMechanicalExhibit/);
-    return {role: 'assistant', tool_calls: [{id: `r-${call}`, type: 'function', function: {name: step[0], arguments: JSON.stringify(step[1])}}]};
+    return withFixtureText({role: 'assistant', tool_calls: [{id: `r-${call}`, type: 'function', function: {name: step[0], arguments: JSON.stringify(step[1])}}]});
   }};
   const result = await generateSimulator({gateway, description: '根据马达照片做拆解', references: [reference], onProgress: phase => events.push(phase), onAnalysis: value => events.push(value), visualReview: async ({references, description}) => {
     assert.deepEqual(references, [reference]);

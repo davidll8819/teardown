@@ -2,6 +2,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {mkdir, readFile, readdir, rename, rm, writeFile} from 'node:fs/promises';
 import path from 'node:path';
 import {normalizeAnalysis, normalizeReferences} from './references.mjs';
+import {normalizeJobLocale} from './locale.mjs';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 function normalizeQuality(value, visualReviewed = false) {
@@ -21,7 +22,7 @@ function normalizeQuality(value, visualReviewed = false) {
     feedback,
   };
 }
-const publicJob = ({id, description, status, createdAt, updatedAt, error, phase, stages, references, analysis, quality, visualReviewed}) => ({id, description, status, createdAt, updatedAt, ...(error ? {error} : {}), ...(phase ? {phase} : {}), ...(stages ? {stages} : {}), ...(references?.length ? {references} : {}), ...(analysis ? {analysis} : {}), ...(quality || status === 'completed' ? {quality: normalizeQuality(quality, visualReviewed)} : {})});
+const publicJob = ({id, description, locale = 'zh-CN', status, createdAt, updatedAt, error, phase, stages, references, analysis, quality, visualReviewed}) => ({id, description, locale, status, createdAt, updatedAt, ...(error ? {error} : {}), ...(phase ? {phase} : {}), ...(stages ? {stages} : {}), ...(references?.length ? {references} : {}), ...(analysis ? {analysis} : {}), ...(quality || status === 'completed' ? {quality: normalizeQuality(quality, visualReviewed)} : {})});
 const phases = new Set(['analyzing', 'generating', 'working', 'building', 'reviewing']);
 function failureCode(error) {
   if (error?.status === 401 || error?.status === 403) return 'gateway_auth_failed';
@@ -73,8 +74,9 @@ export function createJobStore({directory, generate, now = () => new Date().toIS
     })));
     return items.filter(Boolean).sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(publicJob);
   }
-  async function create(scope, description, references = []) {
+  async function create(scope, description, references = [], locale) {
     if (typeof description !== 'string' || description.trim().length < 2 || description.length > 8000) throw new Error('invalid_description');
+    const taskLocale = normalizeJobLocale(locale);
     const scopeKey = scopeDir(scope);
     if (active.has(scopeKey)) throw new Error('job_already_running');
     if (active.size >= maxActive) throw new Error('job_capacity_reached');
@@ -84,7 +86,7 @@ export function createJobStore({directory, generate, now = () => new Date().toIS
     const id = randomUUID();
     active.get(scopeKey).id = id;
     const dir = jobDir(scope, id);
-    const job = {id, description: description.trim(), status: 'queued', createdAt: now(), updatedAt: now(), ...(images.length ? {references: images.map(({buffer, ...metadata}) => metadata)} : {})};
+    const job = {id, description: description.trim(), locale: taskLocale, status: 'queued', createdAt: now(), updatedAt: now(), ...(images.length ? {references: images.map(({buffer, ...metadata}) => metadata)} : {})};
     try {
       await mkdir(dir, {recursive: true, mode: 0o700});
       for (const image of images) await writeFile(path.join(dir, `${image.id}.image`), image.buffer, {mode: 0o600, flag: 'wx'});
@@ -115,7 +117,7 @@ export function createJobStore({directory, generate, now = () => new Date().toIS
       try {
         job.status = 'generating'; job.updatedAt = now(); await save(dir, job);
         if (controller.signal.aborted) throw new Error('cancelled');
-        const result = await generate({description: job.description, references: images.map(({name, mimeType, buffer}) => ({name, mimeType, data: buffer.toString('base64')})), signal: controller.signal, onProgress, onAnalysis});
+        const result = await generate({description: job.description, locale: job.locale, references: images.map(({name, mimeType, buffer}) => ({name, mimeType, data: buffer.toString('base64')})), signal: controller.signal, onProgress, onAnalysis});
         if (!job.analysis && result.analysis) onAnalysis(result.analysis);
         acceptingUpdates = false;
         await progressWrites;

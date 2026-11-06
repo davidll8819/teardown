@@ -1,3 +1,5 @@
+import {createTranslator} from './i18n-ui.js';
+
 export const MAX_PREVIEW_BYTES = 8 * 1024 * 1024;
 export const PREVIEW_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'";
 
@@ -5,8 +7,9 @@ export class PreviewError extends Error {
   constructor(code) {super(code); this.name = 'PreviewError'; this.code = code;}
 }
 
-export function previewMessage(error) {
-  return ({
+export function previewMessage(error, locale = 'zh-CN') {
+  const t = createTranslator(locale);
+  return t(({
     preview_auth: '登录状态已失效，请从 4yi 应用入口重新打开，再载入结果。',
     preview_forbidden: '当前账号无法读取这份结果，请确认登录账号与所属组织。',
     preview_missing: '当前账号或应用实例找不到这份结果。请刷新任务列表后重新选择。',
@@ -16,7 +19,7 @@ export function previewMessage(error) {
     preview_timeout: '载入结果超时，应用可能正在唤醒。请稍后重新载入。',
     preview_too_large: '结果文件超出预览大小限制，暂时无法载入。',
     preview_invalid: '服务器没有返回有效的模拟器页面，请重新载入；仍失败时请联系管理员。',
-  })[error?.code] || '暂时无法读取模拟器，请检查连接后重新载入。';
+  })[error?.code] || '暂时无法读取模拟器，请检查连接后重新载入。');
 }
 
 // Preserve the generator's document, including its own restrictive meta CSP.
